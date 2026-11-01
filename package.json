@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "description": "Cortico World: host and supervise a local audiocpp_server (start, health, restart, status) for other voice Worlds",
+  "author": "kmchai",
   "license": "MIT",
   "keywords": [
     "cortico-world",
