@@ -1,6 +1,6 @@
 {
   "name": "@kmchai/cortico-world-audiocpp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Cortico World: host and supervise a local audiocpp_server (start, health, restart, status) for other voice Worlds",
   "author": "kmchai",
@@ -10,7 +10,11 @@
     "cortico",
     "audiocpp",
     "tts",
-    "speech"
+    "speech",
+    "语音",
+    "语音合成",
+    "语音服务",
+    "进程托管"
   ],
   "engines": {
     "node": ">=22"
@@ -20,6 +24,17 @@
   "cortico": {
     "kind": "world",
     "api": 6,
+    "displayName": "audiocpp",
+    "locales": {
+      "zh": {
+        "displayName": "audiocpp 服务",
+        "description": "拉起并看守本机 audiocpp_server:探活、状态、日志与退出重启,供语音 World 通过 HTTP 使用。"
+      },
+      "en": {
+        "displayName": "audiocpp",
+        "description": "Host and supervise a local audiocpp_server: health, status, logs and restart, for voice Worlds over HTTP."
+      }
+    },
     "tags": [
       "local",
       "external-setup",
