@@ -1,0 +1,26 @@
+{
+  "tools": [],
+  "events": [
+    {
+      "type": "audiocpp.started",
+      "description": {
+        "zh": "audiocpp 服务已就绪;只归档。",
+        "en": "The audiocpp service is online; archived only."
+      }
+    },
+    {
+      "type": "audiocpp.stopped",
+      "description": {
+        "zh": "audiocpp 服务已停止;只归档。",
+        "en": "The audiocpp service stopped; archived only."
+      }
+    },
+    {
+      "type": "audiocpp.failed",
+      "description": {
+        "zh": "audiocpp 服务启动失败或异常退出;只归档。",
+        "en": "The audiocpp service failed to start or exited unexpectedly; archived only."
+      }
+    }
+  ]
+}

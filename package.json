@@ -1,0 +1,47 @@
+{
+  "name": "@kmchai/cortico-world-audiocpp",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Cortico World: host and supervise a local audiocpp_server (start, health, restart, status) for other voice Worlds",
+  "license": "MIT",
+  "keywords": [
+    "cortico-world",
+    "cortico",
+    "audiocpp",
+    "tts",
+    "speech"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@11.28.6",
+  "main": "./src/index.ts",
+  "cortico": {
+    "kind": "world",
+    "api": 6,
+    "tags": [
+      "local",
+      "external-setup",
+      "experimental"
+    ],
+    "describe": "describe.json"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "CHANGELOG.md",
+    "describe.json"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "smoke:host": "tsx scripts/smoke-host.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "cortico": "^0.2.12",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
