@@ -132,6 +132,7 @@ export class Supervisor {
     if (this.phase === 'online' || this.phase === 'starting') return;
     this.stopping = false;
     const healthy = await this.health();
+    if (this.stopping) return;
     if (healthy) {
       this.models = healthy.models;
       this.backend = healthy.backend;
@@ -197,7 +198,7 @@ export class Supervisor {
     child.once('error', (error) => this.onExit(child, null, null, error));
 
     const ok = await this.waitHealthy(this.cfg.startTimeoutSec * 1000);
-    if (this.stopping) {
+    if (this.stopping || this.childExited) {
       await this.killChild();
       return;
     }
@@ -206,8 +207,13 @@ export class Supervisor {
       await this.killChild();
       return;
     }
-    this.models = (await this.health())?.models ?? this.models;
-    this.backend = (await this.health())?.backend ?? this.cfg.backend;
+    const health = await this.health();
+    if (this.stopping || this.childExited) {
+      await this.killChild();
+      return;
+    }
+    this.models = health?.models ?? this.models;
+    this.backend = health?.backend ?? this.cfg.backend;
     this.onlineSince = this.deps.now();
     this.restarts = 0;
     this.setPhase('online', `${this.backend || this.cfg.backend} · ${this.models} models`);
@@ -300,6 +306,7 @@ export class Supervisor {
   async refresh(): Promise<void> {
     if (this.stopping || this.phase === 'starting') return;
     const health = await this.health();
+    if (this.stopping) return;
     if (health) {
       this.models = health.models;
       this.backend = health.backend;

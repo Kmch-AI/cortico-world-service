@@ -79,6 +79,23 @@ describe('Supervisor', () => {
     await sup.stop();
   });
 
+  it('启动探活期间 stop,不会再变 online', async () => {
+    const h = harness({}, { adopt: true });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const baseFetch = h.deps.fetch;
+    h.deps.fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      await gate;
+      return baseFetch(input, init);
+    }) as typeof fetch;
+    const sup = new Supervisor({ cfg: h.cfg, dataDir: 'C:/data', log: quietLogger, deps: h.deps });
+    const starting = sup.start();
+    await sup.stop();
+    release();
+    await starting;
+    expect(sup.status().phase).toBe('off');
+  });
+
   it('探活失败把在线改成 error', async () => {
     const { sup, h } = make({}, { adopt: true });
     await sup.start();
