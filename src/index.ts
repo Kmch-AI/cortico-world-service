@@ -1,6 +1,53 @@
 /** 包入口:默认导出 `WorldDefinition`,加载器按 `cortico.kind === 'world'` 认它。 */
-import { AUDIOCPP } from './definition.ts';
+import { SERVICE } from './definition.ts';
 
-export default AUDIOCPP;
-export { AUDIOCPP };
-export type { AudiocppConfigSection } from './types.ts';
+export default SERVICE;
+export { SERVICE };
+export { SERVICE_DEFAULTS, SERVICE_ID, SERVICE_VERSION, serviceConfigGroups, serviceText } from './config.ts';
+export type { ServiceText } from './config.ts';
+export { ServiceWorld } from './world.ts';
+export type { ServiceWorldOptions } from './world.ts';
+export { Manager, DEFAULT_LOG_LINES, MAX_LOG_LINES } from './manager.ts';
+export type { ManagerOptions, ServiceListSource } from './manager.ts';
+export { SERVICE_ID_RE, SERVICE_KINDS, SERVICE_PROTOCOLS } from './panel.ts';
+export type {
+  PanelGateway, PanelLogs, PanelModels, PanelService, PanelServiceEntry, PanelState, PanelTokenResult,
+} from './panel.ts';
+export { normalizeEntry, validateServices } from './validate.ts';
+export { clearEnvLine, ENV_NAME_RE } from './secrets.ts';
+export {
+  Supervisor, idleServiceStatus, serviceBaseUrl, serviceLogPath, servicePort,
+} from './supervisor.ts';
+export type {
+  ChildLike, LaunchSpec, LogSink, SupervisorDeps, SupervisorOptions,
+} from './supervisor.ts';
+export { ServiceError } from './errors.ts';
+export type { ServiceErrorKind, ServiceErrorOptions } from './errors.ts';
+export {
+  gatewayAuthError, isLoopbackHost, startGateway,
+} from './gateway/server.ts';
+export type {
+  GatewayHandle, GatewayHandlers, GatewayHealthBody, GatewayModel, GatewayOptions,
+  GatewayVoice, GatewayVoiceList, GatewayVoiceQuery,
+} from './gateway/server.ts';
+export { ModelCatalog } from './profiles/discover.ts';
+export type { CatalogOptions, DiscoveryIo } from './profiles/discover.ts';
+export {
+  BUILTIN_BY_ID, BUILTIN_PROFILES, AUDIOCPP_MING3, CUSTOM, OPENAI, SING,
+} from './profiles/builtin.ts';
+export {
+  buildSing, buildSpeech, matchesModel, profileOf, profilesOf, resolveProfile,
+  resolveSingProfile, speedLevelOf,
+} from './profiles/resolve.ts';
+export type { BuiltRequest } from './profiles/resolve.ts';
+export {
+  acceptsSing, acceptsSpeech, audiocppProtocol, customProtocol, openaiProtocol,
+  protocolOf, singProtocol,
+} from './protocol/index.ts';
+export type { ProtocolAdapter, ProtocolRequest, VoiceListRequest } from './protocol/index.ts';
+export type {
+  AudioFormat, AudiocppBackend, Backend, GatewayPhase, GatewayStatus, ModelField, ModelProfile,
+  ModelProfileOption, ModelProfileSpeedLevel, ModelProfileVariant, ModelRecord, Phase,
+  ServiceCatalog, ServiceConfigSection, ServiceEntry, ServiceKind, ServiceProtocol, ServiceStatus,
+  SingRequest, SpeechRequest, SupervisorStatus, TtsAudio, VoiceOption,
+} from './types.ts';

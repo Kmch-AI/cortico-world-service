@@ -1,0 +1,174 @@
+/*
+ * 服务面板的专有样式。类名一律 svc- 前缀;颜色与字体只用 WebUI 主题变量,
+ * 通用 class(pill / chip / field / sheet / btn)一个都不覆盖。
+ */
+
+.svc-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.svc-view {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.svc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.svc-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: var(--sheet-2);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 7px 10px;
+}
+
+.svc-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.svc-lamp {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ink-dim);
+  flex: none;
+}
+
+.svc-lamp[data-state='online'] {
+  background: var(--ok);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 18%, transparent);
+}
+
+.svc-lamp[data-state='starting'] {
+  background: var(--warn);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 18%, transparent);
+}
+
+.svc-lamp[data-state='error'] {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 18%, transparent);
+}
+
+.svc-lamp[data-state='off'] {
+  background: var(--ink-dim);
+}
+
+.svc-name {
+  font-weight: 600;
+}
+
+.svc-id,
+.svc-mono,
+.svc-meta {
+  font: 11.5px/1.45 var(--mono);
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+
+.svc-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  flex-wrap: wrap;
+}
+
+.pill.svc-bad {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 42%, transparent);
+}
+
+.svc-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  gap: 8px 12px;
+  align-items: end;
+}
+
+.svc-form .fieldrow {
+  margin: 0;
+}
+
+.svc-form .fieldrow > input.field,
+.svc-form .fieldrow > select.field,
+.svc-form .fieldrow > textarea.field {
+  width: 100%;
+  min-width: 0;
+}
+
+.svc-form-wide {
+  grid-column: 1 / -1;
+}
+
+.svc-form-wide .fieldrow {
+  margin: 0;
+}
+
+.svc-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin: 8px 0 2px;
+}
+
+.svc-path {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.svc-path input.field {
+  flex: 1;
+  min-width: 0;
+}
+
+.svc-token {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.svc-token-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px 12px;
+}
+
+.svc-token-row .fieldrow {
+  flex: 1 1 12rem;
+  margin: 0;
+}
+
+.svc-token-row .fieldrow > input.field {
+  width: 100%;
+}
+
+.svc-chiprow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+@container webui-content (max-width: 560px) {
+  .svc-form {
+    grid-template-columns: 1fr;
+  }
+
+  .svc-actions {
+    margin-left: 0;
+  }
+}

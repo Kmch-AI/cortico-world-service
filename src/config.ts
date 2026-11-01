@@ -1,150 +1,107 @@
-/** `worlds.audiocpp` 的默认值、配置组与界面文案。 */
+/** `worlds.service` 的默认值、配置组与界面文案。 */
 import type { ConfigGroup } from 'cortico/core/types.ts';
 import { pick, type Language, type LanguageTable } from 'cortico/core/language.ts';
-import type { AudiocppConfigSection } from './types.ts';
+import type { ServiceConfigSection } from './types.ts';
 
-export const AUDIOCPP_ID = 'audiocpp';
+export const SERVICE_ID = 'service';
+export const SERVICE_VERSION = '0.1.0';
 
-export const AUDIOCPP_DEFAULTS: AudiocppConfigSection = {
+export const SERVICE_DEFAULTS: ServiceConfigSection = {
   enabled: false,
-  manage: true,
-  serverDir: '',
-  configPath: '',
-  binary: '',
   host: '127.0.0.1',
-  port: 8000,
-  backend: 'cuda',
-  device: 0,
-  threads: 0,
-  autoStart: true,
-  restartOnExit: true,
-  idleUnloadMs: 0,
-  extraArgs: '',
-  logFile: '',
-  ui: true,
-  pollMs: 5000,
-  startTimeoutSec: 60,
+  port: 9883,
+  tokenSecret: '',
+  allowQueryToken: false,
+  requestTimeoutSec: 180,
+  defaultSpeechModel: '',
+  services: [],
 };
 
 const TEXT = {
   zh: {
-    label: 'audiocpp',
-    lampProcess: '服务进程',
+    label: '服务',
+    panelServices: '服务',
+    lampGateway: '网关',
+    lampServices: '服务',
     lampModels: '模型',
-    server: '服务',
-    manage: '托管进程',
-    manageDesc: '关掉只探活,不拉起服务。',
-    serverDir: '服务目录',
-    serverDirDesc: '含 audiocpp_server 的目录;也是进程的工作目录。',
-    configPath: 'server.json',
-    configPathDesc: '留空用服务目录下的 server.json。',
-    binary: '可执行文件',
-    binaryDesc: '留空按平台取 audiocpp_server(.exe)。',
+    gateway: '网关',
+    gatewayDesc: '本机推理服务的统一 HTTP 入口。',
+    enabled: '启用',
     host: '监听地址',
+    hostDesc: '只应对外暴露时再改;非回环地址需要令牌。',
     port: '端口',
-    backend: '后端',
-    device: '设备编号',
-    threads: '线程数',
-    threadsDesc: '0 用服务默认值。',
-    runtime: '运行',
-    autoStart: 'World 启动时拉起',
-    restartOnExit: '异常退出后重启',
-    idleUnloadMs: '空闲卸模型(毫秒)',
-    idleUnloadMsDesc: '0 为不卸;只卸模型,不杀进程。',
-    extraArgs: '附加参数',
-    extraArgsDesc: '按空白分隔。',
-    ui: '启用自带 WebUI',
-    pollMs: '探活间隔(毫秒)',
-    startTimeoutSec: '启动等待(秒)',
-    logFile: '日志文件',
-    logFileDesc: '留空写到数据目录的 audiocpp.log。',
+    tokenSecret: '令牌变量名',
+    tokenSecretDesc: '部署 .env 里的变量名;留空表示本机免认证。',
+    allowQueryToken: '允许查询参数令牌',
+    allowQueryTokenDesc: '开启后也接受 ?token=;默认只认 Authorization 头。',
+    request: '请求',
+    requestTimeoutSec: '上游超时(秒)',
+    defaultSpeechModel: '默认语音模型',
+    defaultSpeechModelDesc: '请求不带 model 时用它;留空按服务顺序取第一个可用模型。',
   },
   en: {
-    label: 'audiocpp',
-    lampProcess: 'Service process',
+    label: 'Service',
+    panelServices: 'Services',
+    lampGateway: 'Gateway',
+    lampServices: 'Services',
     lampModels: 'Models',
-    server: 'Service',
-    manage: 'Manage the process',
-    manageDesc: 'Off means only probe an existing service.',
-    serverDir: 'Server directory',
-    serverDirDesc: 'Holds audiocpp_server; also the working directory.',
-    configPath: 'server.json',
-    configPathDesc: 'Empty uses server.json inside the server directory.',
-    binary: 'Executable',
-    binaryDesc: 'Empty uses audiocpp_server(.exe) for this platform.',
+    gateway: 'Gateway',
+    gatewayDesc: 'One HTTP entry for local inference services.',
+    enabled: 'Enabled',
     host: 'Listen address',
+    hostDesc: 'Only change it to expose the gateway; a non-loopback address needs a token.',
     port: 'Port',
-    backend: 'Backend',
-    device: 'Device index',
-    threads: 'Threads',
-    threadsDesc: '0 uses the server default.',
-    runtime: 'Runtime',
-    autoStart: 'Start with the World',
-    restartOnExit: 'Restart after an unexpected exit',
-    idleUnloadMs: 'Idle model unload (ms)',
-    idleUnloadMsDesc: '0 disables; unloads models only, not the process.',
-    extraArgs: 'Extra arguments',
-    extraArgsDesc: 'Split on whitespace.',
-    ui: 'Enable the built-in WebUI',
-    pollMs: 'Health interval (ms)',
-    startTimeoutSec: 'Start timeout (seconds)',
-    logFile: 'Log file',
-    logFileDesc: 'Empty writes audiocpp.log in the data directory.',
+    tokenSecret: 'Token variable',
+    tokenSecretDesc: 'A deployment .env variable name; empty means no auth on loopback.',
+    allowQueryToken: 'Accept a query token',
+    allowQueryTokenDesc: 'Also accept ?token=; the Authorization header is the default.',
+    request: 'Requests',
+    requestTimeoutSec: 'Upstream timeout (seconds)',
+    defaultSpeechModel: 'Default speech model',
+    defaultSpeechModelDesc: 'Used when a request omits model; empty picks the first available model in service order.',
   },
 } as const;
 
-export type AudiocppText = typeof TEXT.zh;
+export type ServiceText = typeof TEXT.zh;
 
-export function audiocppText(language: Language): AudiocppText {
-  return pick(language, TEXT as unknown as LanguageTable<AudiocppText>);
+export function serviceText(language: Language): ServiceText {
+  return pick(language, TEXT as unknown as LanguageTable<ServiceText>);
 }
 
-export function audiocppConfigGroups(language: Language): ConfigGroup[] {
-  const t = audiocppText(language);
-  const p = 'worlds.audiocpp.';
+export function serviceConfigGroups(language: Language): ConfigGroup[] {
+  const t = serviceText(language);
+  const p = 'worlds.service.';
   return [
     {
-      id: 'world:audiocpp-service',
-      owner: 'world:audiocpp',
+      id: 'world:service-gateway',
+      owner: 'world:service',
       schema: {
         type: 'object',
-        title: t.server,
+        title: t.gateway,
+        description: t.gatewayDesc,
         properties: {
-          [`${p}manage`]: { type: 'boolean', title: t.manage, description: t.manageDesc, 'x-hot': false },
-          [`${p}serverDir`]: {
-            type: 'string', title: t.serverDir, description: t.serverDirDesc, 'x-hot': false,
-            'x-path': { kind: 'directory' },
-          },
-          [`${p}configPath`]: {
-            type: 'string', title: t.configPath, description: t.configPathDesc, 'x-hot': false,
-            'x-path': { kind: 'file', extensions: ['json'] },
-          },
-          [`${p}binary`]: { type: 'string', title: t.binary, description: t.binaryDesc, 'x-hot': false },
-          [`${p}host`]: { type: 'string', title: t.host, 'x-hot': false },
+          [`${p}enabled`]: { type: 'boolean', title: t.enabled, 'x-hot': false },
+          [`${p}host`]: { type: 'string', title: t.host, description: t.hostDesc, 'x-hot': false },
           [`${p}port`]: { type: 'integer', title: t.port, minimum: 1, maximum: 65535, 'x-hot': false },
-          [`${p}backend`]: { type: 'string', title: t.backend, enum: ['cuda', 'cpu', 'vulkan', 'hip', 'metal'], 'x-hot': false },
-          [`${p}device`]: { type: 'integer', title: t.device, minimum: 0, maximum: 32, 'x-hot': false },
-          [`${p}threads`]: { type: 'integer', title: t.threads, description: t.threadsDesc, minimum: 0, maximum: 256, 'x-hot': false },
+          [`${p}tokenSecret`]: {
+            type: 'string', title: t.tokenSecret, description: t.tokenSecretDesc, 'x-hot': false,
+          },
+          [`${p}allowQueryToken`]: { type: 'boolean', title: t.allowQueryToken, description: t.allowQueryTokenDesc, 'x-hot': false },
         },
       },
     },
     {
-      id: 'world:audiocpp-runtime',
-      owner: 'world:audiocpp',
+      id: 'world:service-request',
+      owner: 'world:service',
       schema: {
         type: 'object',
-        title: t.runtime,
+        title: t.request,
         properties: {
-          [`${p}autoStart`]: { type: 'boolean', title: t.autoStart, 'x-hot': false },
-          [`${p}restartOnExit`]: { type: 'boolean', title: t.restartOnExit, 'x-hot': false },
-          [`${p}idleUnloadMs`]: { type: 'integer', title: t.idleUnloadMs, description: t.idleUnloadMsDesc, minimum: 0, maximum: 86_400_000, 'x-hot': false },
-          [`${p}extraArgs`]: { type: 'string', title: t.extraArgs, description: t.extraArgsDesc, 'x-hot': false },
-          [`${p}ui`]: { type: 'boolean', title: t.ui, 'x-hot': false },
-          [`${p}pollMs`]: { type: 'integer', title: t.pollMs, minimum: 1000, maximum: 120_000, 'x-hot': false },
-          [`${p}startTimeoutSec`]: { type: 'integer', title: t.startTimeoutSec, minimum: 5, maximum: 600, 'x-hot': false },
-          [`${p}logFile`]: {
-            type: 'string', title: t.logFile, description: t.logFileDesc, 'x-hot': false,
-            'x-path': { kind: 'file', extensions: ['log', 'txt'] },
+          [`${p}requestTimeoutSec`]: {
+            type: 'integer', title: t.requestTimeoutSec, minimum: 5, maximum: 3600,
+          },
+          [`${p}defaultSpeechModel`]: {
+            type: 'string', title: t.defaultSpeechModel, description: t.defaultSpeechModelDesc,
           },
         },
       },

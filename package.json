@@ -1,10 +1,14 @@
 {
-  "name": "@kmchai/cortico-world-audiocpp",
-  "version": "0.1.1",
+  "name": "@kmchai/cortico-world-service",
+  "version": "0.1.0",
   "type": "module",
-  "description": "Cortico World: host and supervise a local audiocpp_server (start, health, restart, status) for other voice Worlds",
+  "description": "Cortico World: host local inference services and expose them through one OpenAI-shaped speech API; audiocpp is only one backend",
   "author": "kmchai",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Kmch-AI/cortico-world-service.git"
+  },
   "keywords": [
     "cortico-world",
     "cortico",
@@ -24,15 +28,15 @@
   "cortico": {
     "kind": "world",
     "api": 6,
-    "displayName": "audiocpp",
+    "displayName": "Kmch AI · 服务",
     "locales": {
       "zh": {
-        "displayName": "audiocpp 服务",
-        "description": "拉起并看守本机 audiocpp_server:探活、状态、日志与退出重启,供语音 World 通过 HTTP 使用。"
+        "displayName": "Kmch AI · 服务",
+        "description": "托管本机推理服务,统一暴露 OpenAI 形状的语音接口;audiocpp 只是其中一种后端。"
       },
       "en": {
-        "displayName": "audiocpp",
-        "description": "Host and supervise a local audiocpp_server: health, status, logs and restart, for voice Worlds over HTTP."
+        "displayName": "Kmch AI · Service",
+        "description": "Host local inference services behind one OpenAI-shaped speech API; audiocpp is only one backend."
       }
     },
     "tags": [
@@ -40,22 +44,28 @@
       "external-setup",
       "experimental"
     ],
+    "webUiClient": "dist/webui.js",
+    "webUiStyle": "dist/webui.css",
     "describe": "describe.json"
   },
   "files": [
     "src",
+    "dist/webui.js",
+    "dist/webui.css",
     "README.md",
     "CHANGELOG.md",
     "describe.json"
   ],
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.webui.json",
+    "build:webui": "node scripts/build-webui.mjs",
     "smoke:host": "tsx scripts/smoke-host.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "cortico": "^0.2.12",
+    "esbuild": "^0.28.2",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"

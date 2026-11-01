@@ -1,13 +1,13 @@
 /**
- * 用真的 audiocpp_server 跑一遍托管:拉起、探活、停止。
+ * 用真的 audiocpp_server 跑一遍进程托管:拉起、探活、停止。
  * 用法:`pnpm smoke:host <serverDir> [port] [dataDir]`。
  */
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { nullLogger } from 'cortico/core/util.ts';
-import { AUDIOCPP_DEFAULTS } from '../src/config.ts';
 import { Supervisor } from '../src/supervisor.ts';
+import type { ServiceEntry } from '../src/types.ts';
 
 const serverDir = process.argv[2];
 if (!serverDir) {
@@ -15,18 +15,23 @@ if (!serverDir) {
   process.exit(2);
 }
 const port = Number(process.argv[3] ?? 8018);
-const dataDir = process.argv[4] ?? mkdtempSync(join(tmpdir(), 'audiocpp-host-'));
+const dataDir = process.argv[4] ?? mkdtempSync(join(tmpdir(), 'service-host-'));
 const ownData = process.argv[4] === undefined;
-const cfg = {
-  ...AUDIOCPP_DEFAULTS,
+const entry: ServiceEntry = {
+  id: 'audiocpp',
+  label: 'audiocpp',
+  kind: 'audiocpp',
+  protocol: 'audiocpp',
   enabled: true,
-  serverDir,
+  manage: true,
+  autoStart: true,
+  restartOnExit: true,
+  host: '127.0.0.1',
   port,
-  backend: 'cuda' as const,
-  ui: false,
-  startTimeoutSec: 120,
+  serverDir,
+  options: { backend: 'cuda', device: 0, ui: false, startTimeoutSec: 120 },
 };
-const sup = new Supervisor({ cfg, dataDir, log: nullLogger() });
+const sup = new Supervisor({ entry, dataDir, log: nullLogger() });
 try {
   const started = Date.now();
   await sup.start();

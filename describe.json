@@ -2,24 +2,24 @@
   "tools": [],
   "events": [
     {
-      "type": "audiocpp.started",
+      "type": "service.started",
       "description": {
-        "zh": "audiocpp 服务已就绪;只归档。",
-        "en": "The audiocpp service is online; archived only."
+        "zh": "一个推理服务已就绪;只归档。",
+        "en": "An inference service is online; archived only."
       }
     },
     {
-      "type": "audiocpp.stopped",
+      "type": "service.stopped",
       "description": {
-        "zh": "audiocpp 服务已停止;只归档。",
-        "en": "The audiocpp service stopped; archived only."
+        "zh": "一个推理服务已停止;只归档。",
+        "en": "An inference service stopped; archived only."
       }
     },
     {
-      "type": "audiocpp.failed",
+      "type": "service.failed",
       "description": {
-        "zh": "audiocpp 服务启动失败或异常退出;只归档。",
-        "en": "The audiocpp service failed to start or exited unexpectedly; archived only."
+        "zh": "一个推理服务启动失败或异常退出;只归档。",
+        "en": "An inference service failed to start or exited unexpectedly; archived only."
       }
     }
   ]

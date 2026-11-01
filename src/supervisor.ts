@@ -1,12 +1,12 @@
 /**
- * audiocpp_server 的进程管理:先探活,活着就接管;没活着按配置拉起。
+ * 一个推理服务条目的进程管理:先探活,活着就接管;没活着按 kind 预设拉起。
  * 探活、启动、退出、重启都只改这里的状态,World 只读状态和收回调。
  */
 import { spawn } from 'node:child_process';
 import { createWriteStream, existsSync, mkdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import type { Logger } from 'cortico/core/types.ts';
-import type { AudiocppConfigSection, Phase, SupervisorStatus } from './types.ts';
+import type { Phase, ServiceEntry, ServiceKind, ServiceStatus } from './types.ts';
 
 export interface ChildLike {
   pid?: number;
@@ -36,11 +36,14 @@ export interface SupervisorDeps {
   openLog(path: string): LogSink;
   now(): number;
   sleep(ms: number): Promise<void>;
-  onPhase?(status: SupervisorStatus): void;
+  onPhase?(status: ServiceStatus): void;
 }
 
 export interface SupervisorOptions {
-  cfg: AudiocppConfigSection;
+  /** 被托管的服务条目。 */
+  entry?: ServiceEntry;
+  /** `entry` 的旧字段名,兼容直接迁移的调用方。 */
+  cfg?: ServiceEntry;
   dataDir: string;
   log: Logger;
   deps?: Partial<SupervisorDeps>;
@@ -49,6 +52,11 @@ export interface SupervisorOptions {
 /** 重启退避:5 秒、15 秒、60 秒。 */
 const RESTART_DELAYS = [5_000, 15_000, 60_000];
 const HEALTH_TIMEOUT_MS = 3000;
+const DEFAULT_HOST = '127.0.0.1';
+const DEFAULT_AUDIOCPP_PORT = 8000;
+const DEFAULT_START_TIMEOUT_SEC = 60;
+const DEFAULT_POLL_MS = 5000;
+const HEALTHY_STATES = new Set(['ok', 'ready', 'healthy', 'up', 'online']);
 
 function splitArgs(raw: string): string[] {
   const out: string[] = [];
@@ -57,13 +65,105 @@ function splitArgs(raw: string): string[] {
   return out.filter(Boolean);
 }
 
+function optionString(entry: ServiceEntry, key: string): string {
+  const value = entry.options?.[key];
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function optionNumber(entry: ServiceEntry, key: string, fallback: number): number {
+  const value = entry.options?.[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function optionBoolean(entry: ServiceEntry, key: string, fallback: boolean): boolean {
+  const value = entry.options?.[key];
+  return typeof value === 'boolean' ? value : fallback;
+}
+
+/** 服务条目的监听端口;audiocpp 沿用 0.1.x 的 8000。 */
+export function servicePort(entry: ServiceEntry): number | null {
+  if (typeof entry.port === 'number' && entry.port > 0) return entry.port;
+  return entry.kind === 'audiocpp' ? DEFAULT_AUDIOCPP_PORT : null;
+}
+
+/** 条目的 HTTP 根地址;显式 baseUrl 优先。 */
+export function serviceBaseUrl(entry: ServiceEntry): string {
+  const explicit = entry.baseUrl?.trim();
+  if (explicit) return explicit.replace(/\/+$/, '');
+  const host = entry.host?.trim() || DEFAULT_HOST;
+  const port = servicePort(entry);
+  return port ? `http://${host}:${port}` : `http://${host}`;
+}
+
+/** 服务日志写在数据目录的 service-<id>.log。 */
+export function serviceLogPath(entry: ServiceEntry, dataDir: string): string {
+  const safe = entry.id.replace(/[^A-Za-z0-9._-]+/g, '_') || 'service';
+  return join(dataDir, `service-${safe}.log`);
+}
+
+/** 未创建 Supervisor 的条目也有一份完整状态。 */
+export function idleServiceStatus(entry: ServiceEntry): ServiceStatus {
+  return {
+    entry,
+    phase: 'off',
+    detail: entry.enabled ? 'not started' : 'disabled',
+    external: false,
+    managed: entry.manage,
+    pid: null,
+    models: 0,
+    backend: '',
+    baseUrl: serviceBaseUrl(entry),
+    restarts: 0,
+  };
+}
+
+function defaultBinary(kind: ServiceKind): string {
+  const exe = process.platform === 'win32' ? '.exe' : '';
+  switch (kind) {
+    case 'audiocpp': return `audiocpp_server${exe}`;
+    case 'llamacpp': return `llama-server${exe}`;
+    default: return '';
+  }
+}
+
+function healthPath(entry: ServiceEntry): string {
+  const raw = entry.healthPath?.trim() || '/health';
+  return raw.startsWith('/') ? raw : `/${raw}`;
+}
+
+function healthUrl(entry: ServiceEntry): string {
+  const raw = entry.healthPath?.trim();
+  if (raw && /^https?:\/\//i.test(raw)) return raw;
+  return `${serviceBaseUrl(entry)}${healthPath(entry)}`;
+}
+
+function defaultBackend(entry: ServiceEntry): string {
+  return entry.kind === 'audiocpp' ? optionString(entry, 'backend') || 'cuda' : '';
+}
+
+function looksLikePath(value: string): boolean {
+  return isAbsolute(value) || value.includes('/') || value.includes('\\');
+}
+
+function resolveCommand(entry: ServiceEntry): { command: string; checkExists: boolean } | { error: string } {
+  const serverDir = entry.serverDir?.trim() ?? '';
+  const raw = entry.binary?.trim() ?? '';
+  const binary = raw || defaultBinary(entry.kind);
+  if (!binary) return { error: 'binary is empty' };
+  if (!raw && !serverDir) return { error: 'serverDir is empty' };
+  const command = isAbsolute(binary) || !serverDir ? binary : join(serverDir, binary);
+  return { command, checkExists: looksLikePath(command) };
+}
+
 function defaultDeps(): SupervisorDeps {
   return {
     fetch: ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => fetch(input, init)) as typeof fetch,
+    // command / args 已经是 argv;shell 恒为 false,面板其他字段不可能拼进命令行。
     launch: (spec) => spawn(spec.command, spec.args, {
       cwd: spec.cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
+      shell: false,
     }) as unknown as ChildLike,
     exists: (path) => existsSync(path),
     mkdir: (path) => { mkdirSync(path, { recursive: true }); },
@@ -81,6 +181,7 @@ function defaultDeps(): SupervisorDeps {
 
 export class Supervisor {
   private readonly deps: SupervisorDeps;
+  private entry: ServiceEntry;
   private child: ChildLike | null = null;
   private childExited = false;
   private stopping = false;
@@ -91,28 +192,33 @@ export class Supervisor {
   private detail = 'not started';
   private models = 0;
   private backend = '';
-  private onlineSince = 0;
+  private onlineSince: number | null = null;
   private restarts = 0;
   private starting: Promise<void> | null = null;
 
   constructor(private readonly opts: SupervisorOptions) {
     this.deps = { ...defaultDeps(), ...opts.deps };
+    const entry = opts.entry ?? opts.cfg;
+    if (!entry) throw new Error('SupervisorOptions.entry is required');
+    this.entry = entry;
   }
 
-  private get cfg(): AudiocppConfigSection {
-    return this.opts.cfg;
+  /** 配置是活数组;管理器替换条目对象时同步引用。 */
+  setEntry(entry: ServiceEntry): void {
+    this.entry = entry;
   }
 
   baseUrl(): string {
-    return `http://${this.cfg.host}:${this.cfg.port}`;
+    return serviceBaseUrl(this.entry);
   }
 
-  status(): SupervisorStatus {
+  status(): ServiceStatus {
     return {
+      entry: this.entry,
       phase: this.phase,
       detail: this.detail,
       external: this.phase === 'online' && this.child === null,
-      managed: this.cfg.manage,
+      managed: this.entry.manage,
       pid: this.child?.pid ?? null,
       models: this.models,
       backend: this.backend,
@@ -121,7 +227,7 @@ export class Supervisor {
     };
   }
 
-  /** 启动:先探活,已经活着就接管;否则按配置拉起。不抛错,失败写进状态。 */
+  /** 启动:先探活,已经活着就接管;否则按 kind 预设拉起。不抛错,失败写进状态。 */
   async start(): Promise<void> {
     if (this.starting) return this.starting;
     this.starting = this.startOnce().finally(() => { this.starting = null; });
@@ -135,49 +241,40 @@ export class Supervisor {
     if (this.stopping) return;
     if (healthy) {
       this.models = healthy.models;
-      this.backend = healthy.backend;
-      this.setPhase('online', `${healthy.backend} · ${healthy.models} models`);
+      this.backend = healthy.backend || defaultBackend(this.entry);
+      this.onlineSince = this.deps.now();
+      this.setPhase('online', `${this.backend || this.entry.kind} · ${this.models} models`);
       this.startMonitor();
       return;
     }
     if (this.stopping) return;
-    if (!this.cfg.manage) {
+    if (!this.entry.manage) {
       this.setPhase('error', `service is not reachable at ${this.baseUrl()}`);
       return;
     }
 
-    const serverDir = this.cfg.serverDir.trim();
-    if (!serverDir) {
-      this.setPhase('off', 'serverDir is empty');
+    const resolved = resolveCommand(this.entry);
+    if ('error' in resolved) {
+      this.setPhase('off', resolved.error);
       return;
     }
-    const command = this.cfg.binary.trim()
-      || join(serverDir, process.platform === 'win32' ? 'audiocpp_server.exe' : 'audiocpp_server');
-    if (!this.deps.exists(command)) {
+    const command = resolved.command;
+    if (resolved.checkExists && !this.deps.exists(command)) {
       this.setPhase('error', `executable not found: ${command}`);
       return;
     }
 
-    const args = [
-      '--host', this.cfg.host,
-      '--port', String(this.cfg.port),
-      '--backend', this.cfg.backend,
-    ];
-    if (this.cfg.device >= 0) args.push('--device', String(this.cfg.device));
-    if (this.cfg.threads > 0) args.push('--threads', String(this.cfg.threads));
-    if (this.cfg.idleUnloadMs > 0) args.push('--idle-unload-ms', String(this.cfg.idleUnloadMs));
-    if (!this.cfg.ui) args.push('--no-ui');
-    args.push(...splitArgs(this.cfg.extraArgs ?? ''));
-    const configPath = this.cfg.configPath.trim() || join(serverDir, 'server.json');
-    if (this.deps.exists(configPath)) args.unshift('--config', configPath);
+    const serverDir = this.entry.serverDir?.trim() ?? '';
+    const cwd = serverDir || (isAbsolute(command) ? dirname(command) : process.cwd());
+    const args = this.launchArgs();
 
-    const logPath = this.cfg.logFile.trim() || join(this.opts.dataDir, 'audiocpp.log');
+    const logPath = serviceLogPath(this.entry, this.opts.dataDir);
     try {
       this.deps.mkdir(dirname(logPath));
       this.sink = this.deps.openLog(logPath);
       this.sink.write(`\n[${new Date(this.deps.now()).toISOString()}] ${command} ${args.join(' ')}\n`);
     } catch (error) {
-      this.opts.log.warn('audiocpp 日志文件打不开', { err: error instanceof Error ? error.message : String(error) });
+      this.opts.log.warn(`服务 ${this.entry.id} 日志文件打不开`, { err: error instanceof Error ? error.message : String(error) });
       this.sink = null;
     }
 
@@ -185,7 +282,7 @@ export class Supervisor {
     this.childExited = false;
     let child: ChildLike;
     try {
-      child = this.deps.launch({ command, args, cwd: serverDir });
+      child = this.deps.launch({ command, args, cwd });
     } catch (error) {
       this.setPhase('error', `launch failed: ${error instanceof Error ? error.message : String(error)}`);
       this.sink?.close();
@@ -197,13 +294,14 @@ export class Supervisor {
     child.once('exit', (code, signal) => this.onExit(child, code, signal));
     child.once('error', (error) => this.onExit(child, null, null, error));
 
-    const ok = await this.waitHealthy(this.cfg.startTimeoutSec * 1000);
+    const startTimeoutSec = optionNumber(this.entry, 'startTimeoutSec', DEFAULT_START_TIMEOUT_SEC);
+    const ok = await this.waitHealthy(startTimeoutSec * 1000);
     if (this.stopping || this.childExited) {
       await this.killChild();
       return;
     }
     if (!ok) {
-      this.setPhase('error', `service did not become healthy within ${this.cfg.startTimeoutSec}s`);
+      this.setPhase('error', `service did not become healthy within ${startTimeoutSec}s`);
       await this.killChild();
       return;
     }
@@ -213,18 +311,44 @@ export class Supervisor {
       return;
     }
     this.models = health?.models ?? this.models;
-    this.backend = health?.backend ?? this.cfg.backend;
+    this.backend = health?.backend || defaultBackend(this.entry);
+    // 计数只在稳定在线 60 秒后归零(refresh),否则 5s/15s/60s 退避会退化成无限 5s 重试。
     this.onlineSince = this.deps.now();
-    this.restarts = 0;
-    this.setPhase('online', `${this.backend || this.cfg.backend} · ${this.models} models`);
+    this.setPhase('online', `${this.backend || this.entry.kind} · ${this.models} models`);
     this.startMonitor();
+  }
+
+  /** kind 决定启动参数;custom / systemone / svc 只用条目自己的 args。 */
+  private launchArgs(): string[] {
+    if (this.entry.kind !== 'audiocpp') return splitArgs(this.entry.args ?? '');
+
+    const host = this.entry.host?.trim() || DEFAULT_HOST;
+    const port = servicePort(this.entry) ?? DEFAULT_AUDIOCPP_PORT;
+    const args = [
+      '--host', host,
+      '--port', String(port),
+      '--backend', optionString(this.entry, 'backend') || 'cuda',
+    ];
+    const device = optionNumber(this.entry, 'device', 0);
+    if (device >= 0) args.push('--device', String(device));
+    const threads = optionNumber(this.entry, 'threads', 0);
+    if (threads > 0) args.push('--threads', String(threads));
+    const idleUnloadMs = optionNumber(this.entry, 'idleUnloadMs', 0);
+    if (idleUnloadMs > 0) args.push('--idle-unload-ms', String(idleUnloadMs));
+    if (!optionBoolean(this.entry, 'ui', true)) args.push('--no-ui');
+    args.push(...splitArgs(this.entry.args ?? ''));
+
+    const serverDir = this.entry.serverDir?.trim() ?? '';
+    const configPath = this.entry.configPath?.trim() || (serverDir ? join(serverDir, 'server.json') : '');
+    if (configPath && this.deps.exists(configPath)) args.unshift('--config', configPath);
+    return args;
   }
 
   private pipe(child: ChildLike): void {
     const write = (chunk: Buffer | string): void => {
       const text = chunk.toString();
       this.sink?.write(text);
-      this.opts.log.debug('audiocpp', { line: text.trim().slice(0, 400) });
+      this.opts.log.debug(this.entry.id, { line: text.trim().slice(0, 400) });
     };
     child.stdout?.on('data', write);
     child.stderr?.on('data', write);
@@ -236,10 +360,11 @@ export class Supervisor {
     this.childExited = true;
     if (this.stopping) return;
     const reason = error ? error.message : `exited (${code ?? signal ?? 'unknown'})`;
+    this.onlineSince = null;
     this.setPhase('error', reason);
     this.sink?.close();
     this.sink = null;
-    if (this.cfg.restartOnExit && this.cfg.autoStart && this.restarts < RESTART_DELAYS.length) {
+    if (this.entry.restartOnExit && this.restarts < RESTART_DELAYS.length) {
       const delay = RESTART_DELAYS[this.restarts]!;
       this.restarts += 1;
       this.detail = `${reason}; restarting in ${Math.round(delay / 1000)}s (attempt ${this.restarts})`;
@@ -276,7 +401,7 @@ export class Supervisor {
       const health = await this.health();
       if (health) {
         this.models = health.models;
-        this.backend = health.backend;
+        this.backend = health.backend || defaultBackend(this.entry);
         return true;
       }
       await this.deps.sleep(500);
@@ -288,12 +413,20 @@ export class Supervisor {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), HEALTH_TIMEOUT_MS);
     try {
-      const res = await this.deps.fetch(`${this.baseUrl()}/health`, { method: 'GET', signal: ctrl.signal });
+      const res = await this.deps.fetch(healthUrl(this.entry), { method: 'GET', signal: ctrl.signal });
       if (!res.ok) return null;
-      const data = await res.json().catch(() => null) as { status?: unknown; models?: unknown; backend?: unknown } | null;
-      if (data?.status && data.status !== 'ok') return null;
-      const models = typeof data?.models === 'number' ? data.models : Number(data?.models ?? 0) || 0;
-      const backend = typeof data?.backend === 'string' ? data.backend : '';
+      const data = await res.json().catch(() => null) as {
+        status?: unknown;
+        models?: unknown;
+        backend?: unknown;
+      } | null;
+      if (!data) return { models: 0, backend: '' };
+      if (typeof data.status === 'string' && !HEALTHY_STATES.has(data.status.toLowerCase())) return null;
+      let models = 0;
+      if (typeof data.models === 'number') models = data.models;
+      else if (Array.isArray(data.models)) models = data.models.length;
+      else if (data.models && typeof data.models === 'object') models = Object.keys(data.models).length;
+      const backend = typeof data.backend === 'string' ? data.backend : '';
       return { models, backend };
     } catch {
       return null;
@@ -309,12 +442,12 @@ export class Supervisor {
     if (this.stopping) return;
     if (health) {
       this.models = health.models;
-      this.backend = health.backend;
+      this.backend = health.backend || defaultBackend(this.entry);
       if (this.phase !== 'online') {
         this.onlineSince = this.deps.now();
-        this.setPhase('online', `${health.backend} · ${health.models} models`);
+        this.setPhase('online', `${this.backend || this.entry.kind} · ${health.models} models`);
       }
-      if (this.onlineSince && this.deps.now() - this.onlineSince > 60_000) this.restarts = 0;
+      if (this.onlineSince !== null && this.deps.now() - this.onlineSince > 60_000) this.restarts = 0;
       return;
     }
     if (this.phase === 'online') this.setPhase('error', `health check failed at ${this.baseUrl()}`);
@@ -322,7 +455,8 @@ export class Supervisor {
 
   private startMonitor(): void {
     if (this.monitor) return;
-    this.monitor = setInterval(() => { void this.refresh(); }, Math.max(1000, this.cfg.pollMs));
+    const pollMs = optionNumber(this.entry, 'pollMs', DEFAULT_POLL_MS);
+    this.monitor = setInterval(() => { void this.refresh(); }, Math.max(1000, pollMs));
     this.monitor.unref?.();
   }
 
@@ -342,6 +476,7 @@ export class Supervisor {
     this.sink = null;
     this.models = 0;
     this.backend = '';
+    this.onlineSince = null;
     this.setPhase('off', 'stopped');
   }
 

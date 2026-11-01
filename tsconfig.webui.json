@@ -1,0 +1,8 @@
+{
+  // 浏览器侧面板:只有这份配置带 DOM。Node 侧仍旧按 tsconfig.json 检查。
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"]
+  },
+  "include": ["webui/**/*.ts"]
+}

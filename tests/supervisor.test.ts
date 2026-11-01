@@ -2,14 +2,14 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { Supervisor } from '../src/supervisor.ts';
 import { quietLogger } from './helpers/quiet.ts';
-import { harness } from './helpers/audiocpp.ts';
+import { harness } from './helpers/service.ts';
 
-function make(patch: Parameters<typeof harness>[0] = {}, opts: Parameters<typeof harness>[1] = {}): {
-  sup: Supervisor;
-  h: ReturnType<typeof harness>;
-} {
+function make(
+  patch: Parameters<typeof harness>[0] = {},
+  opts: Parameters<typeof harness>[1] = {},
+): { sup: Supervisor; h: ReturnType<typeof harness> } {
   const h = harness(patch, opts);
-  const sup = new Supervisor({ cfg: h.cfg, dataDir: 'C:/data', log: quietLogger, deps: h.deps });
+  const sup = new Supervisor({ entry: h.entry, dataDir: 'C:/data', log: quietLogger, deps: h.deps });
   return { sup, h };
 }
 
@@ -25,12 +25,17 @@ describe('Supervisor', () => {
     await sup.stop();
   });
 
-  it('按配置拉起进程,参数完整', async () => {
-    const { sup, h } = make({ device: 1, threads: 4, idleUnloadMs: 60_000, ui: false, extraArgs: '--parallel-jobs' }, { healthFails: 1 });
+  it('按 kind 预设拉起 audiocpp,参数完整', async () => {
+    const { sup, h } = make({
+      port: 8000,
+      options: { backend: 'cuda', device: 1, threads: 4, idleUnloadMs: 60_000, ui: false },
+      args: '--parallel-jobs',
+    }, { healthFails: 1 });
     await sup.start();
     expect(h.launches).toHaveLength(1);
     const launch = h.launches[0]!;
-    expect(launch.command).toBe(join('C:/audiocpp', 'audiocpp_server.exe'));
+    const exe = process.platform === 'win32' ? 'audiocpp_server.exe' : 'audiocpp_server';
+    expect(launch.command).toBe(join('C:/audiocpp', exe));
     expect(launch.cwd).toBe('C:/audiocpp');
     expect(launch.args).toEqual([
       '--config', join('C:/audiocpp', 'server.json'),
@@ -52,6 +57,41 @@ describe('Supervisor', () => {
     await sup.start();
     expect(sup.status().phase).toBe('off');
     expect(sup.status().detail).toContain('serverDir');
+  });
+
+  it('custom 条目不要求 audiocpp 字段,只用 command/args', async () => {
+    const binary = process.platform === 'win32' ? 'C:/tools/tts-server.exe' : '/tools/tts-server';
+    const { sup, h } = make({
+      id: 'qwen-tts',
+      kind: 'custom',
+      protocol: 'openai',
+      serverDir: '',
+      binary,
+      args: '--port 9010 --model qwen',
+      options: {},
+    }, { healthFails: 1 });
+    await sup.start();
+    expect(h.launches).toHaveLength(1);
+    expect(h.launches[0]!.command).toBe(binary);
+    expect(h.launches[0]!.args).toEqual(['--port', '9010', '--model', 'qwen']);
+    expect(h.launches[0]!.cwd).toBe(process.platform === 'win32' ? 'C:/tools' : '/tools');
+    expect(sup.status().phase).toBe('online');
+    await sup.stop();
+  });
+
+  it('custom 条目缺少 binary 时保持 off', async () => {
+    const { sup, h } = make({
+      id: 'empty',
+      kind: 'custom',
+      protocol: 'none',
+      serverDir: '',
+      binary: '',
+      options: {},
+    }, { healthFails: 1 });
+    await sup.start();
+    expect(h.launches).toEqual([]);
+    expect(sup.status().phase).toBe('off');
+    expect(sup.status().detail).toContain('binary');
   });
 
   it('manage=false 且服务不可达时记 error', async () => {
@@ -79,6 +119,33 @@ describe('Supervisor', () => {
     await sup.stop();
   });
 
+  it('autoStart=false 时仍按 restartOnExit 退避重启', async () => {
+    const { sup, h } = make({ autoStart: false }, { healthFails: 1 });
+    await sup.start();
+    h.child.emitExit(1);
+    expect(sup.status().phase).toBe('error');
+    expect(sup.status().restarts).toBe(1);
+    const timer = (sup as unknown as { restartTimer: NodeJS.Timeout | null }).restartTimer;
+    expect(timer).not.toBeNull();
+    await sup.stop();
+  });
+
+  it('重启计数上线时不清零,稳定在线 60 秒后才清零', async () => {
+    const { sup, h } = make({}, { healthFails: 1 });
+    await sup.start();
+    h.child.emitExit(1);
+    expect(sup.status().restarts).toBe(1);
+
+    h.healthy = true;
+    await sup.start();
+    expect(sup.status().restarts).toBe(1);
+
+    h.advance(60_001);
+    await sup.refresh();
+    expect(sup.status().restarts).toBe(0);
+    await sup.stop();
+  });
+
   it('启动探活期间 stop,不会再变 online', async () => {
     const h = harness({}, { adopt: true });
     let release!: () => void;
@@ -88,7 +155,7 @@ describe('Supervisor', () => {
       await gate;
       return baseFetch(input, init);
     }) as typeof fetch;
-    const sup = new Supervisor({ cfg: h.cfg, dataDir: 'C:/data', log: quietLogger, deps: h.deps });
+    const sup = new Supervisor({ entry: h.entry, dataDir: 'C:/data', log: quietLogger, deps: h.deps });
     const starting = sup.start();
     await sup.stop();
     release();
