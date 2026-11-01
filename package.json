@@ -1,6 +1,6 @@
 {
   "name": "@kmchai/cortico-world-service",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Cortico World: host local inference services and expose them through one OpenAI-shaped speech API; audiocpp is only one backend",
   "author": "kmchai",

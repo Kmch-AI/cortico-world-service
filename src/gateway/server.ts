@@ -6,7 +6,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Logger } from 'cortico/core/types.ts';
 import { ServiceError, errorMessage } from '../errors.ts';
 import type {
-  AudioFormat, GatewayPhase, ServiceConfigSection, ServiceStatus, SingRequest,
+  AudioFormat, GatewayPhase, ModelParameter, ServiceConfigSection, ServiceStatus, SingRequest,
   SpeechRequest, TtsAudio,
 } from '../types.ts';
 
@@ -36,6 +36,8 @@ export interface GatewayModel {
   display_name?: string;
   tasks?: string[];
   voices?: string[];
+  /** 该模型接受的请求参数(name/type/description/default/values/min/max)。 */
+  parameters?: ModelParameter[];
 }
 
 export interface GatewayVoiceQuery {
@@ -126,6 +128,8 @@ function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     const declared = Number(req.headers['content-length'] ?? '');
     if (Number.isFinite(declared) && declared > BODY_MAX) {
+      // 先把上传排空,否则客户端可能只看到连接被重置,读不到 413。
+      req.resume();
       reject(new ServiceError('too_large', `request body must be at most ${BODY_MAX} bytes`));
       return;
     }
@@ -301,7 +305,6 @@ function writeError(res: ServerResponse, error: unknown, log: Logger): void {
     'cache-control': 'no-store',
   };
   if (serviceError.retryAfterSec !== null) headers['retry-after'] = serviceError.retryAfterSec;
-  if (serviceError.status === 413) headers.connection = 'close';
   res.writeHead(serviceError.status, headers);
   res.end(text);
 }

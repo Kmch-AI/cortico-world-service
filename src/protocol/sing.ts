@@ -3,7 +3,7 @@
  * 或 `{audioBase64, mime}`。路径可用条目的 `options.path` 覆盖。
  */
 import { ServiceError } from '../errors.ts';
-import { serviceBaseUrl } from '../supervisor.ts';
+import { endpointUrl } from '../entry.ts';
 import type { TtsAudio } from '../types.ts';
 import {
   audioOf, authHeaders, errorSnippet, mimeOf, timedFetch,
@@ -12,7 +12,7 @@ import type { ProtocolAdapter, ProtocolRequest } from './types.ts';
 
 function singUrl(req: ProtocolRequest): string {
   const explicit = req.entry.options?.path;
-  const base = serviceBaseUrl(req.entry).replace(/\/+$/, '');
+  const base = endpointUrl(req.entry);
   if (typeof explicit === 'string' && explicit.trim()) {
     const path = explicit.trim();
     return `${base}${path.startsWith('/') ? path : `/${path}`}`;

@@ -3,21 +3,23 @@ import { SERVICE } from './definition.ts';
 
 export default SERVICE;
 export { SERVICE };
-export { SERVICE_DEFAULTS, SERVICE_ID, SERVICE_VERSION, serviceConfigGroups, serviceText } from './config.ts';
+export { SERVICE_DEFAULTS, SERVICE_ID, SERVICE_VERSION, serviceText } from './config.ts';
 export type { ServiceText } from './config.ts';
 export { ServiceWorld } from './world.ts';
 export type { ServiceWorldOptions } from './world.ts';
 export { Manager, DEFAULT_LOG_LINES, MAX_LOG_LINES } from './manager.ts';
 export type { ManagerOptions, ServiceListSource } from './manager.ts';
-export { SERVICE_ID_RE, SERVICE_KINDS, SERVICE_PROTOCOLS } from './panel.ts';
+export { SERVICE_ID_RE, SERVICE_TYPES } from './panel.ts';
 export type {
   PanelGateway, PanelLogs, PanelModels, PanelService, PanelServiceEntry, PanelState, PanelTokenResult,
 } from './panel.ts';
 export { normalizeEntry, validateServices } from './validate.ts';
 export { clearEnvLine, ENV_NAME_RE } from './secrets.ts';
 export {
-  Supervisor, idleServiceStatus, serviceBaseUrl, serviceLogPath, servicePort,
-} from './supervisor.ts';
+  DEFAULT_HOST, endpointUrl, healthPathOf, healthUrl, hostPort, protocolOf, serverJsonPath,
+  serviceIdFor, slugify,
+} from './entry.ts';
+export { Supervisor, idleServiceStatus, serviceLogPath } from './supervisor.ts';
 export type {
   ChildLike, LaunchSpec, LogSink, SupervisorDeps, SupervisorOptions,
 } from './supervisor.ts';
@@ -33,7 +35,7 @@ export type {
 export { ModelCatalog } from './profiles/discover.ts';
 export type { CatalogOptions, DiscoveryIo } from './profiles/discover.ts';
 export {
-  BUILTIN_BY_ID, BUILTIN_PROFILES, AUDIOCPP_MING3, CUSTOM, OPENAI, SING,
+  BUILTIN_BY_ID, BUILTIN_PROFILES, AUDIOCPP_INDEXTTS2, AUDIOCPP_MING3, CUSTOM, OPENAI, SING,
 } from './profiles/builtin.ts';
 export {
   buildSing, buildSpeech, matchesModel, profileOf, profilesOf, resolveProfile,
@@ -41,13 +43,14 @@ export {
 } from './profiles/resolve.ts';
 export type { BuiltRequest } from './profiles/resolve.ts';
 export {
-  acceptsSing, acceptsSpeech, audiocppProtocol, customProtocol, openaiProtocol,
-  protocolOf, singProtocol,
+  acceptsSing, acceptsSpeech, adapterOf, audiocppProtocol, customProtocol, openaiProtocol,
+  singProtocol,
 } from './protocol/index.ts';
 export type { ProtocolAdapter, ProtocolRequest, VoiceListRequest } from './protocol/index.ts';
 export type {
-  AudioFormat, AudiocppBackend, Backend, GatewayPhase, GatewayStatus, ModelField, ModelProfile,
-  ModelProfileOption, ModelProfileSpeedLevel, ModelProfileVariant, ModelRecord, Phase,
-  ServiceCatalog, ServiceConfigSection, ServiceEntry, ServiceKind, ServiceProtocol, ServiceStatus,
+  AudioFormat, AudiocppBackend, Backend, GatewayPhase, GatewayStatus, ModelField, ModelParameter,
+  ModelParameterType, ModelProfile, ModelProfileOption, ModelProfileSpeedLevel, ModelProfileVariant,
+  ModelRecord, Phase,
+  ServiceCatalog, ServiceConfigSection, ServiceEntry, ServiceProtocol, ServiceStatus, ServiceType,
   SingRequest, SpeechRequest, SupervisorStatus, TtsAudio, VoiceOption,
 } from './types.ts';

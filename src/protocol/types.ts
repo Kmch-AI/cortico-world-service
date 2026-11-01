@@ -1,4 +1,4 @@
-/** 一种 HTTP 方言要拿到的请求形状;registry 按 ServiceEntry.protocol 选适配器。 */
+/** 一种 HTTP 方言要拿到的请求形状;registry 按 `protocolOf(entry)` 选适配器。 */
 import type { Logger } from 'cortico/core/types.ts';
 import type {
   AudioFormat, ModelProfile, ServiceEntry, TtsAudio, VoiceOption,

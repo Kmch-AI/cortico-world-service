@@ -1,5 +1,6 @@
 import { basename, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { serverJsonPath } from '../src/entry.ts';
 import { ModelCatalog, type CatalogOptions } from '../src/profiles/discover.ts';
 import type { ServiceEntry } from '../src/types.ts';
 import { quietLogger } from './helpers/quiet.ts';
@@ -7,14 +8,13 @@ import { quietLogger } from './helpers/quiet.ts';
 function entry(patch: Partial<ServiceEntry> = {}): ServiceEntry {
   return {
     id: 'svc',
-    kind: 'audiocpp',
-    protocol: 'audiocpp',
+    name: 'svc',
+    type: 'audiocpp',
+    endpoint: 'http://127.0.0.1:8000',
     enabled: true,
     manage: false,
     autoStart: false,
     restartOnExit: false,
-    host: '127.0.0.1',
-    port: 8000,
     ...patch,
   };
 }
@@ -116,10 +116,10 @@ describe('ModelCatalog discovery', () => {
     expect(catalog.get('svc')?.stale).toBe(true);
   });
 
-  it('条目显式 models 时不再请求 /v1/models', async () => {
+  it('openai/custom/sing 条目显式 models 时不再请求 /v1/models', async () => {
     const net = fakeNet({ data: [{ id: 'should-not-appear' }] });
     const catalog = new ModelCatalog({ fetch: net.fetch, log: quietLogger });
-    const found = await catalog.refresh(entry({ models: ['alpha', 'beta'] }));
+    const found = await catalog.refresh(entry({ type: 'openai', models: ['alpha', 'beta'] }));
     expect(found.models.map((model) => model.id)).toEqual(['alpha', 'beta']);
     expect(net.calls.some((call) => /\/v1\/models$/.test(call.url))).toBe(false);
   });
@@ -127,68 +127,164 @@ describe('ModelCatalog discovery', () => {
   it('协议 none 的条目只保留配置模型', async () => {
     const net = fakeNet({ data: [{ id: 'nope' }] });
     const catalog = new ModelCatalog({ fetch: net.fetch, log: quietLogger });
-    const found = await catalog.refresh(entry({ protocol: 'none', models: ['llm'] }));
+    const found = await catalog.refresh(entry({ type: 'llamacpp', models: ['llm'] }));
     expect(found.detail).toBe('no HTTP protocol');
     expect(found.models.map((model) => model.id)).toEqual(['llm']);
     expect(net.calls).toEqual([]);
   });
 });
 
-describe('audiocpp local specs', () => {
+describe('audiocpp server.json + specs metadata', () => {
   const serverDir = 'C:/svc';
-  const serverPath = join(serverDir, 'server.json');
+  const serverPath = serverJsonPath({ serverDir })!;
   const specsDir = join(serverDir, 'model_specs');
-  const specPath = join(specsDir, 'ming.json');
-  const bigPath = join(specsDir, 'big.json');
-  const badPath = join(specsDir, 'bad.json');
+  const mingSpec = join(specsDir, 'ming3_tts.json');
+  const indexSpec = join(specsDir, 'index_tts2.json');
+  const extraSpec = join(specsDir, 'chatterbox.json');
 
-  it('读 server.json 与 model_specs,跳过超大与 schema 不符的文件', async () => {
-    const net = fakeNet({ object: 'list', data: [] });
+  const serverJson = JSON.stringify({
+    models: [
+      {
+        id: 'ming3-tts',
+        family: 'ming3_tts',
+        task: 'tts',
+        voice_presets: { '4016': {}, '7': {} },
+        default_voice_preset: '4016',
+      },
+      {
+        id: 'index-tts2',
+        family: 'index_tts2',
+        task: 'tts',
+        voice_presets: { '4016': {} },
+        default_voice_preset: '4016',
+      },
+    ],
+  });
+  const mingMeta = JSON.stringify({
+    family: 'ming3_tts',
+    display_name: 'Ming 3.0 TTS 0.5B',
+    category: 'tts',
+    tasks: ['tts', 'clone'],
+    options: {
+      request: [
+        { name: 'template_name', type: 'enum', description: 'Conditioning template.', values: ['tts', 'basic'] },
+        { name: 'language', type: 'string', description: 'Target language.' },
+        { name: 'seed', type: 'int', description: 'Noise seed.', min: 0, default: 1895 },
+      ],
+    },
+  });
+  const indexMeta = JSON.stringify({
+    family: 'index_tts2',
+    display_name: 'IndexTTS2',
+    category: 'tts',
+    tasks: ['tts', 'clone'],
+    options: {
+      request: [
+        { name: 'text', type: 'string' },
+        { name: 'language', type: 'string' },
+        {
+          name: 'emotion_alpha',
+          type: 'float',
+          description: 'Emotion conditioning blend strength.',
+          min: 0,
+          max: 1,
+          default: 1,
+        },
+        { name: 'use_emotion_text', type: 'bool', description: 'Use text-derived emotion conditioning.', default: false },
+        { name: 'text_chunk_mode', type: 'enum', values: ['default', 'tag_aware'], default: 'default' },
+      ],
+    },
+  });
+
+  function audiocppFiles(
+    files: Record<string, string>,
+    dirs: Record<string, string[]> = {},
+  ): CatalogOptions {
+    return fakeFiles(files, dirs, { [extraSpec]: 3 * 1024 * 1024 });
+  }
+
+  it('只列 server.json 与 /v1/models 的模型,spec 只补元数据', async () => {
+    const net = fakeNet({
+      object: 'list',
+      data: [{ id: 'ming3-tts' }, { id: 'index-tts2' }],
+    });
     const catalog = new ModelCatalog({
       fetch: net.fetch,
       log: quietLogger,
-      ...fakeFiles({
-        [serverPath]: JSON.stringify({
-          models: [{ id: 'srv-model', label: 'Server Model' }],
-          voices: ['g1'],
-        }),
-        [specPath]: JSON.stringify({
-          schema_version: 1,
+      ...audiocppFiles({
+        [serverPath]: serverJson,
+        [mingSpec]: mingMeta,
+        [indexSpec]: indexMeta,
+        [extraSpec]: JSON.stringify({
+          family: 'chatterbox',
+          display_name: 'Chatterbox',
           category: 'tts',
-          id: 'ming3',
-          name: 'Ming 3',
-          voices: ['m1', { id: 'm2', label: 'M2' }],
+          tasks: ['tts'],
         }),
-        [bigPath]: JSON.stringify({ schema_version: 1, category: 'tts', id: 'huge' }),
-        [badPath]: JSON.stringify({ schema_version: 2, category: 'tts', id: 'nope' }),
-      }, { [specsDir]: [basename(specPath), basename(bigPath), basename(badPath)] }, {
-        [bigPath]: 3 * 1024 * 1024,
+      }, {
+        [specsDir]: [basename(mingSpec), basename(indexSpec), basename(extraSpec)],
       }),
     });
-    const found = await catalog.refresh(entry({ serverDir }));
-    expect(found.models.map((model) => model.id)).toEqual(['srv-model', 'ming3']);
-    expect(found.models[0]?.voices).toEqual(['g1']);
-    expect(found.models[1]).toMatchObject({
-      label: 'Ming 3', voices: ['m1', 'm2'], tasks: ['tts'], source: 'spec',
+    // 配置里的 models 不能把不存在的模型塞进 audiocpp 目录。
+    const found = await catalog.refresh(entry({ serverDir, models: ['ghost-model'] }));
+    expect(found.models.map((model) => model.id)).toEqual(['ming3-tts', 'index-tts2']);
+
+    const ming = found.models[0]!;
+    expect(ming).toMatchObject({
+      label: 'Ming 3.0 TTS 0.5B',
+      tasks: ['tts', 'clone'],
+      voices: ['4016', '7'],
+      source: 'api',
+    });
+    // Ming 的控制字段由语音语义负责,不再在模型参数面板里重复暴露。
+    expect(ming.parameters).toBeUndefined();
+
+    const index = found.models[1]!;
+    expect(index).toMatchObject({
+      label: 'IndexTTS2',
+      tasks: ['tts', 'clone'],
+      voices: ['4016'],
+    });
+    expect(index.parameters?.map((item) => item.name)).toEqual([
+      'emotion_alpha', 'emotion_vector', 'use_emotion_text', 'emotion_text', 'use_random_emotion',
+      'interval_silence_ms', 'do_sample', 'top_p', 'top_k', 'temperature', 'length_penalty',
+      'num_beams', 'repetition_penalty', 'max_tokens', 'duration_scale', 'seed',
+      'text_chunk_size', 'text_chunk_mode',
+    ]);
+    expect(index.parameters?.[0]).toMatchObject({
+      type: 'float', description: 'Emotion conditioning blend strength.', min: 0, max: 1, default: 1,
+    });
+    expect(index.parameters?.find((item) => item.name === 'text_chunk_mode')).toMatchObject({
+      type: 'enum', values: ['default', 'tag_aware', 'japanese', 'endline'],
     });
   });
 
-  it('model_specs 里的 models 数组也能识别', async () => {
-    const net = fakeNet({ object: 'list', data: [] });
+  it('没有 server.json 时只用 /v1/models', async () => {
+    const net = fakeNet({ object: 'list', data: [{ id: 'index-tts2' }, { id: 'other' }] });
     const catalog = new ModelCatalog({
       fetch: net.fetch,
       log: quietLogger,
-      ...fakeFiles({
-        [specPath]: JSON.stringify({
-          schema_version: 1,
-          category: 'tts',
-          models: [{ id: 'a', voices: ['v'] }, { id: 'b' }],
-        }),
-      }, { [specsDir]: [basename(specPath)] }),
+      ...fakeFiles({}),
     });
     const found = await catalog.refresh(entry({ serverDir }));
-    expect(found.models.map((model) => model.id)).toEqual(['a', 'b']);
-    expect(found.models[0]?.voices).toEqual(['v']);
+    expect(found.models.map((model) => model.id)).toEqual(['index-tts2', 'other']);
+    expect(found.models[0]?.label).toBeUndefined();
+  });
+
+  it('server.json 存在但 /v1/models 失败时保留声明的模型', async () => {
+    const net = fakeNet({ object: 'list', data: [] });
+    net.fail = true;
+    const catalog = new ModelCatalog({
+      fetch: net.fetch,
+      log: quietLogger,
+      ...audiocppFiles({
+        [serverPath]: serverJson,
+        [indexSpec]: indexMeta,
+      }, { [specsDir]: [basename(indexSpec)] }),
+    });
+    const found = await catalog.refresh(entry({ serverDir }));
+    expect(found.stale).toBe(false);
+    expect(found.models.map((model) => model.id)).toEqual(['ming3-tts', 'index-tts2']);
   });
 });
 

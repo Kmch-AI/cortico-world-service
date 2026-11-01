@@ -25,9 +25,9 @@ describe('Supervisor', () => {
     await sup.stop();
   });
 
-  it('按 kind 预设拉起 audiocpp,参数完整', async () => {
+  it('按 type 预设拉起 audiocpp,参数完整', async () => {
     const { sup, h } = make({
-      port: 8000,
+      endpoint: 'http://127.0.0.1:8000',
       options: { backend: 'cuda', device: 1, threads: 4, idleUnloadMs: 60_000, ui: false },
       args: '--parallel-jobs',
     }, { healthFails: 1 });
@@ -38,7 +38,7 @@ describe('Supervisor', () => {
     expect(launch.command).toBe(join('C:/audiocpp', exe));
     expect(launch.cwd).toBe('C:/audiocpp');
     expect(launch.args).toEqual([
-      '--config', join('C:/audiocpp', 'server.json'),
+      '--config', 'C:/audiocpp/server.json',
       '--host', '127.0.0.1',
       '--port', '8000',
       '--backend', 'cuda',
@@ -63,8 +63,9 @@ describe('Supervisor', () => {
     const binary = process.platform === 'win32' ? 'C:/tools/tts-server.exe' : '/tools/tts-server';
     const { sup, h } = make({
       id: 'qwen-tts',
-      kind: 'custom',
-      protocol: 'openai',
+      name: 'Qwen TTS',
+      type: 'custom',
+      endpoint: 'http://127.0.0.1:9010',
       serverDir: '',
       binary,
       args: '--port 9010 --model qwen',
@@ -79,11 +80,12 @@ describe('Supervisor', () => {
     await sup.stop();
   });
 
-  it('custom 条目缺少 binary 时保持 off', async () => {
+  it('没有预设的类型缺少 binary 时保持 off', async () => {
     const { sup, h } = make({
       id: 'empty',
-      kind: 'custom',
-      protocol: 'none',
+      name: 'Empty',
+      type: 'custom',
+      endpoint: 'http://127.0.0.1:9010',
       serverDir: '',
       binary: '',
       options: {},
@@ -168,6 +170,51 @@ describe('Supervisor', () => {
     await sup.start();
     h.healthy = false;
     await sup.refresh();
+    expect(sup.status().phase).toBe('error');
+    await sup.stop();
+  });
+
+  it('openai 条目 /health 回 404 时退回 /v1/models', async () => {
+    const h = harness({
+      id: 'remote',
+      name: 'Remote',
+      type: 'openai',
+      endpoint: 'http://127.0.0.1:9010',
+      manage: false,
+      serverDir: '',
+      options: {},
+    });
+    const seen: string[] = [];
+    h.deps.fetch = (async (input: Parameters<typeof fetch>[0]) => {
+      const url = String(input);
+      seen.push(url);
+      if (url === 'http://127.0.0.1:9010/health') return new Response('no', { status: 404 });
+      if (url === 'http://127.0.0.1:9010/v1/models') {
+        return new Response(JSON.stringify({ object: 'list', data: [{ id: 'a' }, { id: 'b' }] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response('no', { status: 404 });
+    }) as typeof fetch;
+    const sup = new Supervisor({ entry: h.entry, dataDir: 'C:/data', log: quietLogger, deps: h.deps });
+    await sup.start();
+    expect(seen).toEqual(['http://127.0.0.1:9010/health', 'http://127.0.0.1:9010/v1/models']);
+    expect(sup.status().phase).toBe('online');
+    expect(sup.status().models).toBe(2);
+    await sup.stop();
+  });
+
+  it('audiocpp 的 /health 回 404 时不退回 /v1/models', async () => {
+    const h = harness({ manage: false }, { adopt: false });
+    const seen: string[] = [];
+    h.deps.fetch = (async (input: Parameters<typeof fetch>[0]) => {
+      seen.push(String(input));
+      return new Response('no', { status: 404 });
+    }) as typeof fetch;
+    const sup = new Supervisor({ entry: h.entry, dataDir: 'C:/data', log: quietLogger, deps: h.deps });
+    await sup.start();
+    expect(seen).toEqual(['http://127.0.0.1:8000/health']);
     expect(sup.status().phase).toBe('error');
     await sup.stop();
   });

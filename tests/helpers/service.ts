@@ -1,7 +1,7 @@
 /** 测试用的假进程、假探活与临时 Supervisor。 */
 import { isAbsolute, join } from 'node:path';
+import { endpointUrl } from '../../src/entry.ts';
 import type { SupervisorDeps, LaunchSpec, ChildLike } from '../../src/supervisor.ts';
-import { serviceBaseUrl } from '../../src/supervisor.ts';
 import type { ServiceEntry, ServiceStatus } from '../../src/types.ts';
 
 export type FakeChild = ChildLike & { killed: boolean; emitExit(code?: number | null): void };
@@ -35,15 +35,13 @@ export function fakeChild(pid = 4242): FakeChild {
 export function serviceEntry(patch: Partial<ServiceEntry> = {}): ServiceEntry {
   return {
     id: 'audiocpp',
-    label: 'audiocpp',
-    kind: 'audiocpp',
-    protocol: 'audiocpp',
+    name: 'audiocpp',
+    type: 'audiocpp',
     enabled: true,
+    endpoint: 'http://127.0.0.1:8000',
     manage: true,
     autoStart: true,
     restartOnExit: true,
-    host: '127.0.0.1',
-    port: 8000,
     serverDir: 'C:/audiocpp',
     options: { backend: 'cuda', device: 0, threads: 0, idleUnloadMs: 0, ui: true },
     ...patch,
@@ -132,7 +130,7 @@ export interface MultiHarness {
   advance(ms: number): void;
 }
 
-/** 多条目测试:按 baseUrl 区分探活,按命令行匹配被拉起的进程。 */
+/** 多条目测试:按 endpointUrl 区分探活,按命令行匹配被拉起的进程。 */
 export function multiHarness(
   entries: ServiceEntry[],
   opts: { adopt?: boolean | string[]; healthFails?: number; models?: number; healthyOnLaunch?: boolean } = {},
@@ -147,7 +145,7 @@ export function multiHarness(
     launches: 0,
   }));
   const byBase = [...fixtures]
-    .map((fixture) => ({ fixture, base: serviceBaseUrl(fixture.entry) }))
+    .map((fixture) => ({ fixture, base: endpointUrl(fixture.entry) }))
     .sort((a, b) => b.base.length - a.base.length);
   const byCommand = new Map<string, Fixture>();
   for (const fixture of fixtures) {

@@ -1,13 +1,14 @@
 /**
  * 模型 profile 的解析与请求拼装。解析顺序:条目 `modelProfile` → 模型 id 的前缀/通配匹配
- * → `openai` 兜底;`entry.modelProfiles` 里的覆盖只合并进内置 profile,不保存派生结果。
+ * → `openai` 兜底。
  */
+import { protocolOf } from '../entry.ts';
 import { ServiceError } from '../errors.ts';
 import type {
   AudioFormat, ModelField, ModelProfile, ModelProfileOption, ModelProfileVariant,
   ServiceEntry, SingRequest, SpeechRequest,
 } from '../types.ts';
-import { BUILTIN_BY_ID, BUILTIN_PROFILES } from './builtin.ts';
+import { BUILTIN_PROFILES } from './builtin.ts';
 
 type SemanticValue = string | number;
 
@@ -22,55 +23,13 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
-function mergeProfile(base: ModelProfile, override: Partial<ModelProfile>): ModelProfile {
-  return {
-    id: base.id,
-    label: override.label ?? base.label,
-    protocol: override.protocol ?? base.protocol,
-    match: override.match ?? base.match,
-    fields: override.fields ? { ...base.fields, ...override.fields } : base.fields,
-    variants: override.variants ?? base.variants,
-    options: override.options ?? base.options,
-    defaults: override.defaults ? { ...base.defaults, ...override.defaults } : base.defaults,
-    speedLevels: override.speedLevels ?? base.speedLevels,
-    tags: override.tags ?? base.tags,
-    formats: override.formats ?? base.formats,
-  };
+/** 条目可见的全部 profile。 */
+export function profilesOf(): ModelProfile[] {
+  return [...BUILTIN_PROFILES];
 }
 
-function profileFromOverride(id: string, entry: ServiceEntry, override: Partial<ModelProfile>): ModelProfile {
-  const protocol = override.protocol ?? (entry.protocol === 'none' ? 'openai' : entry.protocol);
-  return {
-    id,
-    label: override.label ?? id,
-    protocol,
-    match: override.match,
-    fields: override.fields,
-    variants: override.variants,
-    options: override.options,
-    defaults: override.defaults,
-    speedLevels: override.speedLevels,
-    tags: override.tags,
-    formats: override.formats,
-  };
-}
-
-/** 条目可见的全部 profile:内置的带覆盖,外加覆盖里新出现的 id。 */
-export function profilesOf(entry: ServiceEntry): ModelProfile[] {
-  const overrides = entry.modelProfiles ?? {};
-  const profiles = BUILTIN_PROFILES.map((base) => {
-    const override = overrides[base.id];
-    return override ? mergeProfile(base, override) : base;
-  });
-  for (const [id, override] of Object.entries(overrides)) {
-    if (BUILTIN_BY_ID[id]) continue;
-    profiles.push(profileFromOverride(id, entry, override));
-  }
-  return profiles;
-}
-
-export function profileOf(entry: ServiceEntry, id: string): ModelProfile | undefined {
-  return profilesOf(entry).find((profile) => profile.id === id);
+export function profileOf(id: string): ModelProfile | undefined {
+  return BUILTIN_PROFILES.find((profile) => profile.id === id);
 }
 
 function escapeRegExp(value: string): string {
@@ -90,7 +49,7 @@ export function matchesModel(pattern: string, modelId: string): boolean {
 
 /** 解析顺序:显式 profile → 模型 id 匹配 → openai。 */
 export function resolveProfile(entry: ServiceEntry, modelId?: string): ModelProfile {
-  const profiles = profilesOf(entry);
+  const profiles = profilesOf();
   const named = entry.modelProfile?.trim() ?? '';
   if (named && named !== 'auto') {
     const profile = profiles.find((item) => item.id === named);
@@ -101,17 +60,19 @@ export function resolveProfile(entry: ServiceEntry, modelId?: string): ModelProf
     const matched = profiles.find((profile) => profile.match?.some((pattern) => matchesModel(pattern, id)));
     if (matched) return matched;
   }
-  return profiles.find((profile) => profile.id === 'openai') ?? profiles[0]!;
+  // custom 条目默认按 custom 的字段映射;其余协议用 openai 形状兜底。
+  const fallback = protocolOf(entry) === 'custom' ? 'custom' : 'openai';
+  return profiles.find((profile) => profile.id === fallback) ?? profiles.find((profile) => profile.id === 'openai') ?? profiles[0]!;
 }
 
 /** 唱歌条目没有显式 profile 时用内置 sing;它把正文映射成 `lyrics`。 */
 export function resolveSingProfile(entry: ServiceEntry): ModelProfile {
   const named = entry.modelProfile?.trim() ?? '';
   if (named && named !== 'auto') {
-    const profile = profilesOf(entry).find((item) => item.id === named);
+    const profile = profilesOf().find((item) => item.id === named);
     if (profile) return profile;
   }
-  return profileOf(entry, 'sing') ?? resolveProfile(entry);
+  return profileOf('sing') ?? resolveProfile(entry);
 }
 
 export function speedLevelOf(levels: ModelProfile['speedLevels'], speed: number | undefined): string | undefined {
@@ -243,12 +204,18 @@ function validateOption(decl: ModelProfileOption, value: unknown): void {
       if (typeof value !== 'number' || !Number.isInteger(value)) {
         throw ServiceError.invalid(`${param} must be an integer`, param);
       }
-      return;
+      break;
     case 'float':
       if (typeof value !== 'number' || !Number.isFinite(value)) {
         throw ServiceError.invalid(`${param} must be a number`, param);
       }
-      return;
+      break;
+  }
+  if (decl.min !== undefined && value < decl.min) {
+    throw ServiceError.invalid(`${param} must be >= ${decl.min}`, param);
+  }
+  if (decl.max !== undefined && value > decl.max) {
+    throw ServiceError.invalid(`${param} must be <= ${decl.max}`, param);
   }
 }
 

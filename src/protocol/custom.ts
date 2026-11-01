@@ -2,19 +2,19 @@
  * 自定义 JSON 协议:请求方法、头与请求体都能在条目的 `options` 里配,
  * 回应可以是音频字节、base64 字段或一个音频地址。给没有专门适配器的服务留的出口。
  *
- * 读取的 options:`url`(优先于 baseUrl)、`path`、`method`、`headers`、`body`、
- * `response`('audio'|'base64'|'url')、`audioPath`。`body` 里的 `{{text}}` 等占位符
- * 用语义字段替换;头里的 `${KEY}` 换成 `secretName` 读到的密钥。
+ * 读取的 options:`url`(优先于 endpoint)、`path`(追加到 endpoint 后)、`method`、
+ * `headers`、`body`、`response`('audio'|'base64'|'url')、`audioPath`。endpoint 本身就是
+ * 请求地址;给 `path` 时才在它后面追加。`body` 里的 `{{text}}` 等占位符用语义字段替换;
+ * 头里的 `${KEY}` 换成 `secretName` 读到的密钥。
  */
+import { endpointUrl } from '../entry.ts';
 import { ServiceError } from '../errors.ts';
-import { serviceBaseUrl } from '../supervisor.ts';
 import type { TtsAudio } from '../types.ts';
 import {
   audioOf, errorSnippet, mimeOf, parseJson, timedFetch,
 } from './http.ts';
 import type { ProtocolAdapter, ProtocolRequest } from './types.ts';
 
-const DEFAULT_PATH = '/v1/audio/speech';
 const DEFAULT_BODY = '{"text":"{{text}}","voice":"{{voice}}"}';
 
 function optionString(req: ProtocolRequest, key: string, fallback = ''): string {
@@ -79,10 +79,12 @@ function decodeBase64(raw: string): Uint8Array {
 }
 
 function targetUrl(req: ProtocolRequest): string {
-  const explicit = optionString(req, 'url') || req.entry.baseUrl?.trim() || '';
+  const explicit = optionString(req, 'url');
   if (explicit) return explicit;
-  const path = optionString(req, 'path', DEFAULT_PATH);
-  return `${serviceBaseUrl(req.entry)}${path.startsWith('/') ? path : `/${path}`}`;
+  const base = endpointUrl(req.entry);
+  const path = optionString(req, 'path');
+  if (!path) return base;
+  return `${base}${path.startsWith('/') ? path : `/${path}`}`;
 }
 
 export const customProtocol: ProtocolAdapter = {

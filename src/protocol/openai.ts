@@ -1,5 +1,5 @@
 /** OpenAI 兼容的 `POST /v1/audio/speech`。 */
-import { serviceBaseUrl } from '../supervisor.ts';
+import { endpointUrl } from '../entry.ts';
 import type { TtsAudio } from '../types.ts';
 import {
   apiUrl, authHeaders, readAudio, timedFetch,
@@ -8,7 +8,7 @@ import type { ProtocolAdapter, ProtocolRequest } from './types.ts';
 
 export async function postSpeech(req: ProtocolRequest): Promise<TtsAudio> {
   const secret = req.entry.secretName ? req.secret(req.entry.secretName) : '';
-  return timedFetch(req.fetch, apiUrl(serviceBaseUrl(req.entry), '/audio/speech'), {
+  return timedFetch(req.fetch, apiUrl(endpointUrl(req.entry), '/audio/speech'), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

@@ -5,7 +5,8 @@
 import type { Language } from 'cortico/core/language.ts';
 import type { Logger, ToolDef, World, WorldHost, WorldLamp, WorldWebUiDecl } from 'cortico/core/types.ts';
 import { nullLogger, nowIso } from 'cortico/core/util.ts';
-import { SERVICE_ID, SERVICE_VERSION, serviceConfigGroups, serviceText } from './config.ts';
+import { SERVICE_ID, SERVICE_VERSION, serviceText } from './config.ts';
+import { serviceIdFor } from './entry.ts';
 import { ServiceError, errorMessage } from './errors.ts';
 import {
   gatewayAuthError, isLoopbackHost, startGateway, type GatewayHandle, type GatewayHandlers,
@@ -13,18 +14,19 @@ import {
 } from './gateway/server.ts';
 import { Manager, DEFAULT_LOG_LINES, MAX_LOG_LINES } from './manager.ts';
 import type {
-  PanelGateway, PanelLogs, PanelModels, PanelService, PanelState, PanelTokenResult,
+  PanelGateway, PanelLogs, PanelModels, PanelService, PanelServiceEntry, PanelState,
+  PanelTokenResult,
 } from './panel.ts';
 import { ModelCatalog } from './profiles/discover.ts';
 import { buildSing, buildSpeech, resolveProfile, resolveSingProfile } from './profiles/resolve.ts';
-import { acceptsSing, acceptsSpeech, protocolOf } from './protocol/index.ts';
+import { acceptsSing, acceptsSpeech, adapterOf, protocolOf } from './protocol/index.ts';
 import { ENV_NAME_RE } from './secrets.ts';
 import type { SupervisorDeps } from './supervisor.ts';
 import type {
   GatewayPhase, GatewayStatus, ModelRecord, ServiceConfigSection, ServiceEntry, ServiceStatus,
   SingRequest, SpeechRequest, TtsAudio,
 } from './types.ts';
-import { normalizeEntry, validateServices } from './validate.ts';
+import { normalizeEntry, normalizeGatewayPatch, validateServices } from './validate.ts';
 
 export interface ServiceWorldOptions {
   /** `worlds.service` 的活引用。 */
@@ -74,6 +76,8 @@ export class ServiceWorld implements World {
   private readonly secretOf: (name: string) => string;
   private host: WorldHost | null = null;
   private gateway: GatewayHandle | null = null;
+  /** 网关监听时的标量;用来判断面板改了端口或令牌名后是否要重启。 */
+  private gatewayBinding: { host: string; port: number; tokenSecret: string } | null = null;
   private gatewayError = '';
   private started = false;
   private startedAt = 0;
@@ -132,10 +136,10 @@ export class ServiceWorld implements World {
 
     const links = enabled
       .filter((status) => status.phase === 'online'
-        && status.entry.kind === 'audiocpp'
+        && status.entry.type === 'audiocpp'
         && status.entry.options?.ui !== false)
       .map((status) => ({
-        label: `${status.entry.label?.trim() || status.entry.id} WebUI`,
+        label: `${status.entry.name} WebUI`,
         href: status.baseUrl,
       }));
 
@@ -154,7 +158,6 @@ export class ServiceWorld implements World {
         { id: 'services', title: t.panelServices, getMethods: ['state', 'models', 'logs'] },
       ],
       invoke: (panel, method, args) => this.invokePanel(panel, method, args),
-      config: serviceConfigGroups(language),
       links,
     };
   }
@@ -164,6 +167,7 @@ export class ServiceWorld implements World {
     this.started = true;
     this.startedAt = Date.now();
     this.gatewayError = '';
+    this.gatewayBinding = null;
 
     const cfg = this.opts.cfg;
     const token = this.token();
@@ -194,6 +198,11 @@ export class ServiceWorld implements World {
         handlers: this.handlers(),
         log: this.log,
       });
+      this.gatewayBinding = {
+        host: cfg.host.trim() || '127.0.0.1',
+        port: this.gateway.port,
+        tokenSecret: cfg.tokenSecret.trim(),
+      };
     } catch (error) {
       this.gatewayError = `gateway failed to start: ${errorMessage(error)}`;
       this.log.error('服务网关启动失败', { err: errorMessage(error) });
@@ -203,6 +212,7 @@ export class ServiceWorld implements World {
   async stop(): Promise<void> {
     const gateway = this.gateway;
     this.gateway = null;
+    this.gatewayBinding = null;
     if (gateway) {
       try {
         await gateway.close();
@@ -244,6 +254,7 @@ export class ServiceWorld implements World {
       case 'state': return this.panelState();
       case 'models': return this.panelModels();
       case 'logs': return this.panelLogs(args);
+      case 'saveGateway': return this.saveGateway(args[0]);
       case 'add': return this.addService(args[0]);
       case 'update': return this.updateService(args[0], args[1]);
       case 'remove': return this.removeService(args[0]);
@@ -266,13 +277,15 @@ export class ServiceWorld implements World {
       ...status,
       entry: { ...status.entry, tokenSet: this.entryTokenSet(status.entry) },
     }));
+    const binding = this.gatewayBinding;
     const panelGateway: PanelGateway = {
       enabled: cfg.enabled,
       status: gateway.status,
+      phase: gateway.phase,
       ready: gateway.ready,
       detail: gateway.detail,
-      host: gateway.host,
-      port: gateway.port,
+      host: cfg.host,
+      port: cfg.port,
       baseUrl: gateway.baseUrl,
       version: gateway.version,
       uptimeSec: gateway.uptimeSec,
@@ -282,6 +295,11 @@ export class ServiceWorld implements World {
       allowQueryToken: cfg.allowQueryToken,
       requestTimeoutSec: cfg.requestTimeoutSec,
       defaultSpeechModel: cfg.defaultSpeechModel,
+      restartRequired: Boolean(binding && (
+        binding.host !== (cfg.host.trim() || '127.0.0.1')
+        || binding.port !== cfg.port
+        || binding.tokenSecret !== cfg.tokenSecret.trim()
+      )),
       models: gateway.models,
       online: enabled.filter((status) => status.phase === 'online').length,
       total: enabled.length,
@@ -314,12 +332,30 @@ export class ServiceWorld implements World {
     return { id, lines, text: await this.manager.logs(id, lines) };
   }
 
-  private async addService(input: unknown): Promise<PanelState> {
-    const entry = normalizeEntry(input);
-    const next = [...this.manager.entries(), entry];
+  private async addService(input: unknown): Promise<PanelServiceEntry> {
+    const entries = this.manager.entries();
+    // id 只在这里生成:用户只填 name,ASCII 名字取 slug,中文/空名字取 type + 序号。
+    const fields = normalizeEntry(input);
+    const id = serviceIdFor(fields.name, fields.type, entries.map((entry) => entry.id));
+    const entry: ServiceEntry = { ...fields, id };
+    const next = [...entries, entry];
     validateServices(next);
     await this.saveServices(next);
-    this.log.info('服务条目已添加', { id: entry.id });
+    this.log.info('服务条目已添加', { id });
+    return { ...entry, tokenSet: this.entryTokenSet(entry) };
+  }
+
+  /**
+   * 保存网关标量。只写白名单键;host / port 与监听时的绑定不同只标 `restartRequired`,
+   * 不在这里重启 World——面板还在用这条连接。
+   */
+  private async saveGateway(input: unknown): Promise<PanelState> {
+    const patch = normalizeGatewayPatch(input);
+    if (Object.keys(patch).length) {
+      this.opts.persist?.(patch);
+      Object.assign(this.opts.cfg, patch);
+      this.log.info('网关配置已保存', { keys: Object.keys(patch) });
+    }
     return this.panelState();
   }
 
@@ -411,7 +447,7 @@ export class ServiceWorld implements World {
       if (!entry) throw ServiceError.notfound(`unknown service: ${id}`, 'id');
       entries = [entry];
     } else {
-      entries = this.manager.entries().filter((entry) => entry.enabled && entry.protocol !== 'none');
+      entries = this.manager.entries().filter((entry) => entry.enabled && protocolOf(entry) !== 'none');
     }
     await Promise.all(entries.map(async (entry) => {
       try {
@@ -558,7 +594,7 @@ export class ServiceWorld implements World {
   }
 
   private modelList(): GatewayModel[] {
-    const entries = this.manager.entries().filter((entry) => entry.protocol !== 'none');
+    const entries = this.manager.entries().filter((entry) => protocolOf(entry) !== 'none');
     return this.catalog.models(entries).map((model) => ({
       id: model.id,
       object: 'model',
@@ -566,12 +602,13 @@ export class ServiceWorld implements World {
       service: model.service,
       ...(model.label ? { display_name: model.label } : {}),
       tasks: model.tasks,
-      ...(model.voices.length ? { voices: model.voices } : {}),
+      voices: model.voices,
+      ...(model.parameters?.length ? { parameters: model.parameters } : {}),
     }));
   }
 
   private async voiceList(query: { model?: string; service?: string }): Promise<GatewayVoiceList> {
-    let entries = this.manager.entries().filter((entry) => entry.enabled && entry.protocol !== 'none');
+    let entries = this.manager.entries().filter((entry) => entry.enabled && protocolOf(entry) !== 'none');
     if (query.service) {
       const entry = entries.find((item) => item.id === query.service);
       if (!entry) throw ServiceError.notfound(`unknown service: ${query.service}`, 'service');
@@ -596,7 +633,7 @@ export class ServiceWorld implements World {
 
     let voices = selected.model.voices;
     if (!voices.length) {
-      const adapter = protocolOf(selected.entry);
+      const adapter = adapterOf(selected.entry);
       if (adapter.listVoices) {
         try {
           const live = await adapter.listVoices({
@@ -688,7 +725,7 @@ export class ServiceWorld implements World {
     return {
       id,
       voices: [],
-      tasks: entry.protocol === 'sing' ? ['sing'] : ['tts'],
+      tasks: protocolOf(entry) === 'sing' ? ['sing'] : ['tts'],
       service: entry.id,
       source: 'config',
     };
@@ -711,7 +748,7 @@ export class ServiceWorld implements World {
       ...request,
       ...(modelId ? { model: modelId } : {}),
     }, selected.entry.options ?? {});
-    const adapter = protocolOf(selected.entry);
+    const adapter = adapterOf(selected.entry);
     return adapter.speech({
       entry: selected.entry,
       body: built.body,
@@ -737,7 +774,7 @@ export class ServiceWorld implements World {
       ...request,
       ...(modelId ? { model: modelId } : {}),
     }, selected.entry.options ?? {});
-    const adapter = protocolOf(selected.entry);
+    const adapter = adapterOf(selected.entry);
     if (!adapter.sing) throw ServiceError.unavailable(`service ${selected.entry.id} does not sing`);
     return adapter.sing({
       entry: selected.entry,
@@ -759,7 +796,7 @@ export class ServiceWorld implements World {
         .map((status) => status.entry.id),
     );
     const entries = this.manager.entries()
-      .filter((entry) => entry.enabled && entry.protocol !== 'none' && online.has(entry.id));
+      .filter((entry) => entry.enabled && protocolOf(entry) !== 'none' && online.has(entry.id));
     await Promise.all(entries.map(async (entry) => {
       try {
         await this.catalog.refresh(entry);
@@ -770,7 +807,7 @@ export class ServiceWorld implements World {
   }
 
   private async refreshCatalog(entry: ServiceEntry): Promise<void> {
-    if (!this.gateway || !entry.enabled || entry.protocol === 'none') return;
+    if (!this.gateway || !entry.enabled || protocolOf(entry) === 'none') return;
     try {
       await this.catalog.refresh(entry);
     } catch (error) {
@@ -786,9 +823,9 @@ export class ServiceWorld implements World {
       : status.phase === 'error' ? 'service.failed'
         : status.phase === 'off' ? 'service.stopped' : '';
     if (!type) return;
-    const name = status.entry.label?.trim() || status.entry.id;
+    const name = status.entry.name;
     const text = status.phase === 'online'
-      ? `service ${name} is online at ${status.baseUrl} (${status.backend || status.entry.kind}, ${status.models} models).`
+      ? `service ${name} is online at ${status.baseUrl} (${status.backend || status.entry.type}, ${status.models} models).`
       : status.phase === 'error'
         ? `service ${name} failed: ${status.detail}`
         : `service ${name} stopped.`;

@@ -9,8 +9,9 @@ import type { ServiceEntry, SpeechRequest } from '../src/types.ts';
 function entry(patch: Partial<ServiceEntry> = {}): ServiceEntry {
   return {
     id: 'svc',
-    kind: 'custom',
-    protocol: 'audiocpp',
+    name: 'svc',
+    type: 'audiocpp',
+    endpoint: 'http://127.0.0.1:8000',
     enabled: true,
     manage: false,
     autoStart: false,
@@ -41,21 +42,12 @@ describe('profile resolution', () => {
     expect(matchesModel('tts-*', 'tts-1')).toBe(true);
   });
 
-  it('entry.modelProfiles 只覆盖给出的字段,也能新增 profile', () => {
-    const overridden = entry({
-      modelProfiles: {
-        'audiocpp-ming3': { label: 'Ming custom', fields: { text: 'text' } },
-        'my-profile': { protocol: 'openai', fields: { text: 'say' } },
-      },
-    });
-    const ming = profilesOf(overridden).find((profile) => profile.id === 'audiocpp-ming3')!;
-    expect(ming.label).toBe('Ming custom');
-    expect(ming.fields?.text).toBe('text');
-    expect(ming.fields?.voice).toBe('voice');
-    const custom = resolveProfile(overridden, 'ming3');
-    expect(custom.id).toBe('audiocpp-ming3');
-    expect(resolveProfile(entry({ modelProfile: 'my-profile', modelProfiles: overridden.modelProfiles }), 'x').id)
-      .toBe('my-profile');
+  it('内置 profile 固定可枚举;显式 modelProfile 可改选', () => {
+    expect(profilesOf().map((profile) => profile.id)).toEqual([
+      'audiocpp-ming3', 'audiocpp-indextts2', 'openai', 'custom', 'sing',
+    ]);
+    expect(resolveProfile(entry({ modelProfile: 'custom' }), 'ming3').id).toBe('custom');
+    expect(resolveProfile(entry({ modelProfile: 'nonexistent' }), 'ming3').id).toBe('audiocpp-ming3');
   });
 });
 
@@ -131,14 +123,10 @@ describe('audiocpp Ming 3.0 request mapping', () => {
     expect(() => buildSpeech(resolveProfile(entry(), 'ming3'), speech({
       options: { pitch: '怪' },
     }))).toThrowError(ServiceError);
-    const limited = entry({
-      modelProfile: 'audiocpp-ming3',
-      modelProfiles: { 'audiocpp-ming3': { formats: ['wav'] } },
-    });
-    expect(() => buildSpeech(resolveProfile(limited, 'ming3'), speech({ format: 'mp3' })))
-      .toThrowError(/does not support mp3/);
     expect(() => buildSpeech(resolveProfile(entry(), 'ming3'), speech({ format: 'mp3' })))
       .not.toThrow();
+    expect(() => buildSpeech(resolveProfile(entry({ modelProfile: 'sing' }), 'ming3'), speech({ format: 'mp3' })))
+      .toThrowError(/does not support mp3/);
   });
 
   it('speedLevelOf 没有档位时返回 undefined', () => {
@@ -147,9 +135,116 @@ describe('audiocpp Ming 3.0 request mapping', () => {
   });
 });
 
+describe('audiocpp IndexTTS2 request mapping', () => {
+  const indexProfile = () => resolveProfile(entry(), 'index-tts2');
+  const defaults = {
+    emotion_alpha: 1,
+    use_emotion_text: false,
+    use_random_emotion: false,
+    interval_silence_ms: 200,
+    do_sample: true,
+    top_p: 0.8,
+    top_k: 30,
+    temperature: 0.8,
+    length_penalty: 0,
+    num_beams: 3,
+    repetition_penalty: 10,
+    max_tokens: 1500,
+    duration_scale: 1,
+    text_chunk_mode: 'default',
+  };
+
+  it('按模型 id 选中 index-tts2 profile(含 2.5 与下划线写法)', () => {
+    expect(indexProfile().id).toBe('audiocpp-indextts2');
+    expect(resolveProfile(entry(), 'index_tts2').id).toBe('audiocpp-indextts2');
+    expect(resolveProfile(entry(), 'index-tts2.5').id).toBe('audiocpp-indextts2');
+    expect(resolveProfile(entry(), 'index_tts2_5').id).toBe('audiocpp-indextts2');
+    expect(indexProfile().label).toBe('audiocpp IndexTTS2');
+    expect(indexProfile().tags).toBe(false);
+    expect(indexProfile().formats).toEqual(['wav']);
+  });
+
+  it('字段映射到 input/voice/response_format,默认参数来自 spec', () => {
+    const built = buildSpeech(indexProfile(), speech({ voice: '4016' }));
+    expect(built.body).toEqual({
+      input: 'hello',
+      voice: '4016',
+      response_format: 'wav',
+      options: defaults,
+    });
+  });
+
+  it('instructions 与 emotion 都走 emotion_text,instructions 优先', () => {
+    const instruct = buildSpeech(indexProfile(), speech({ instructions: 'speak softly' }));
+    expect(instruct.body.options).toMatchObject({
+      use_emotion_text: true, emotion_text: 'speak softly',
+    });
+    const emotion = buildSpeech(indexProfile(), speech({ emotion: 'happy' }));
+    expect(emotion.body.options).toMatchObject({ use_emotion_text: true, emotion_text: 'happy' });
+    const both = buildSpeech(indexProfile(), speech({ instructions: 'whisper', emotion: 'sad' }));
+    expect(both.body.options).toMatchObject({ use_emotion_text: true, emotion_text: 'whisper' });
+  });
+
+  it('speed 不映射到 duration_scale', () => {
+    const built = buildSpeech(indexProfile(), speech({ speed: 1.5 }));
+    expect(built.body.speed).toBeUndefined();
+    expect(built.body.options).toMatchObject({ duration_scale: 1 });
+  });
+
+  it('请求 options 通过校验并覆盖默认值', () => {
+    const built = buildSpeech(indexProfile(), speech({
+      options: {
+        emotion_alpha: 0.5,
+        emotion_vector: '0,0,0,0,0.5,0,0,0',
+        use_emotion_text: false,
+        emotion_text: 'calm',
+        use_random_emotion: true,
+        interval_silence_ms: 0,
+        do_sample: false,
+        top_p: 0.9,
+        top_k: 10,
+        temperature: 0.7,
+        length_penalty: 0.5,
+        num_beams: 1,
+        repetition_penalty: 2,
+        max_tokens: 100,
+        duration_scale: 1.1,
+        seed: 42,
+        text_chunk_size: 80,
+        text_chunk_mode: 'tag_aware',
+      },
+    }));
+    expect(built.body.options).toMatchObject({
+      emotion_alpha: 0.5,
+      use_emotion_text: false,
+      emotion_text: 'calm',
+      use_random_emotion: true,
+      do_sample: false,
+      seed: 42,
+      text_chunk_size: 80,
+      text_chunk_mode: 'tag_aware',
+    });
+  });
+
+  it('非法类型、枚举与越界值是 400', () => {
+    expect(() => buildSpeech(indexProfile(), speech({ options: { emotion_alpha: 2 } })))
+      .toThrowError(/<= 1/);
+    expect(() => buildSpeech(indexProfile(), speech({ options: { top_k: 0 } })))
+      .toThrowError(/>= 1/);
+    expect(() => buildSpeech(indexProfile(), speech({ options: { seed: 1.5 } })))
+      .toThrowError(/integer/);
+    expect(() => buildSpeech(indexProfile(), speech({ options: { use_emotion_text: 'yes' } })))
+      .toThrowError(/boolean/);
+    expect(() => buildSpeech(indexProfile(), speech({ options: { text_chunk_mode: 'bogus' } })))
+      .toThrowError(/one of/);
+    expect(() => buildSpeech(indexProfile(), speech({ format: 'mp3' })))
+      .toThrowError(/does not support mp3/);
+  });
+});
+
 describe('openai and custom request mapping', () => {
   it('openai 映射到标准字段', () => {
-    const built = buildSpeech(resolveProfile(entry({ protocol: 'openai' })), speech({
+    const built = buildSpeech(resolveProfile(entry({ type: 'openai' })), speech({
       model: 'tts-1',
       voice: 'alloy',
       speed: 1.2,
@@ -167,10 +262,8 @@ describe('openai and custom request mapping', () => {
     expect(built.body.options).toBeUndefined();
   });
 
-  it('custom 按 fields 映射,未映射的字段不塞进去', () => {
-    const built = buildSpeech(resolveProfile(entry({
-      protocol: 'custom', modelProfile: 'custom',
-    })), speech({
+  it('custom 条目默认按 custom 映射,未映射的字段不塞进去', () => {
+    const built = buildSpeech(resolveProfile(entry({ type: 'custom' })), speech({
       voice: 'v', emotion: 'calm', language: 'zh', format: 'wav',
     }));
     expect(built.body).toEqual({
@@ -179,7 +272,7 @@ describe('openai and custom request mapping', () => {
   });
 
   it('sing 把正文映射成 lyrics', () => {
-    const built = buildSing(resolveSingProfile(entry({ protocol: 'sing' })), {
+    const built = buildSing(resolveSingProfile(entry({ type: 'sing' })), {
       model: 'song-1', lyrics: 'la la',
     });
     expect(built.body).toEqual({ lyrics: 'la la', model: 'song-1' });

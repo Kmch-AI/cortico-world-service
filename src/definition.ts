@@ -7,7 +7,7 @@ import { ServiceWorld } from './world.ts';
 
 export const SERVICE: WorldDefinition<ServiceConfigSection> = {
   id: SERVICE_ID,
-  label: 'Service',
+  label: 'Kmch AI · 服务',
   defaults: () => ({ ...SERVICE_DEFAULTS, services: [] }),
   create: (ctx) => new ServiceWorld({
     cfg: ctx.cfg,

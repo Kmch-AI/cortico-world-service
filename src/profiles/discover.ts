@@ -1,19 +1,21 @@
 /**
- * 服务目录发现:`GET /v1/models`,`GET /v1/audio/voices?model=`,audiocpp 另外读
- * `server.json` 与 `model_specs/*.json`(只读、单文件上限 2 MiB、schema_version=1、
- * category=tts)。读不到时保留上次目录并标 stale,不让整个服务失败。
+ * 服务目录发现:只列真实存在的模型。audiocpp 用 `server.json` 声明的模型加
+ * `GET /v1/models`;其余协议只用 `GET /v1/models` 或条目里配置的 models。
+ * `model_specs/*.json` 只按 family/id 补元数据(标签、任务、音色、请求参数),
+ * 永远不新增模型。读不到时保留上次目录并标 stale,不让整个服务失败。
  */
 import { readFile, readdir, stat } from 'node:fs/promises';
-import { basename, dirname, extname, join } from 'node:path';
+import { basename, extname, join } from 'node:path';
 import type { Logger } from 'cortico/core/types.ts';
+import { endpointUrl, protocolOf, serverJsonPath } from '../entry.ts';
 import { errorMessage } from '../errors.ts';
 import {
   apiUrl, authHeaders, errorSnippet, parseJson, parseVoices, timedFetch,
 } from '../protocol/http.ts';
-import { serviceBaseUrl } from '../supervisor.ts';
 import type {
-  ModelRecord, ServiceCatalog, ServiceEntry, VoiceOption,
+  ModelParameter, ModelParameterType, ModelRecord, ServiceCatalog, ServiceEntry, VoiceOption,
 } from '../types.ts';
+import { resolveProfile } from './resolve.ts';
 
 export interface DiscoveryIo {
   fetch: typeof fetch;
@@ -48,6 +50,11 @@ const DEFAULT_MAX_VOICE_MODELS = 50;
 const VOICE_BATCH = 8;
 const TASK_TTS = 'tts';
 const TASK_SING = 'sing';
+const PARAMETER_TYPES: ReadonlySet<string> = new Set<ModelParameterType>([
+  'string', 'enum', 'bool', 'int', 'float', 'string_list', 'path', 'path_list',
+]);
+/** 这几个字段由插件自己填,不进模型的 UI 参数表。 */
+const SUPPLIED_PARAMETERS: ReadonlySet<string> = new Set(['text', 'prompt', 'input', 'language']);
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -79,14 +86,51 @@ function voicesOf(raw: Record<string, unknown>): string[] {
   const list = Array.isArray(raw.voices) ? raw.voices
     : Array.isArray(raw.data) ? raw.data
       : [];
-  return parseVoices(list).map((voice) => voice.value);
+  const voices = parseVoices(list).map((voice) => voice.value);
+  // audiocpp 的 server.json 用 voice_presets 的对象键声明音色;默认音色排在最前。
+  if (isPlainObject(raw.voice_presets)) {
+    const presets = raw.voice_presets;
+    const preferred = typeof raw.default_voice_preset === 'string' ? raw.default_voice_preset.trim() : '';
+    if (preferred && Object.prototype.hasOwnProperty.call(presets, preferred)) voices.push(preferred);
+    for (const key of Object.keys(presets)) {
+      if (key !== preferred) voices.push(key);
+    }
+  }
+  return [...new Set(voices)];
+}
+
+/** 上游 `options.request` 里可展示的参数;跳过插件自填的正文/语言字段。 */
+function parametersOf(raw: unknown): ModelParameter[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: ModelParameter[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (!isPlainObject(item)) continue;
+    const name = typeof item.name === 'string' ? item.name.trim() : '';
+    const type = typeof item.type === 'string' ? item.type : '';
+    if (!name || seen.has(name) || SUPPLIED_PARAMETERS.has(name) || !PARAMETER_TYPES.has(type)) continue;
+    const parameter: ModelParameter = { name, type: type as ModelParameterType };
+    if (typeof item.description === 'string' && item.description.trim()) {
+      parameter.description = item.description.trim();
+    }
+    const values = Array.isArray(item.values)
+      ? item.values.filter((value): value is string => typeof value === 'string')
+      : [];
+    if (values.length) parameter.values = values;
+    if (item.default !== undefined) parameter.default = item.default;
+    if (typeof item.min === 'number' && Number.isFinite(item.min)) parameter.min = item.min;
+    if (typeof item.max === 'number' && Number.isFinite(item.max)) parameter.max = item.max;
+    seen.add(name);
+    out.push(parameter);
+  }
+  return out.length ? out : undefined;
 }
 
 function recordOf(item: unknown, entry: ServiceEntry, source: ModelRecord['source']): ModelRecord | null {
   if (typeof item === 'string') {
     const id = item.trim();
     return id ? {
-      id, voices: [], tasks: entry.protocol === 'sing' ? [TASK_SING] : [TASK_TTS], service: entry.id, source,
+      id, voices: [], tasks: protocolOf(entry) === 'sing' ? [TASK_SING] : [TASK_TTS], service: entry.id, source,
     } : null;
   }
   if (!isPlainObject(item)) return null;
@@ -99,13 +143,17 @@ function recordOf(item: unknown, entry: ServiceEntry, source: ModelRecord['sourc
       : typeof item.label === 'string' ? item.label.trim()
         : typeof item.title === 'string' ? item.title.trim()
           : typeof item.name === 'string' ? item.name.trim() : '';
+  const family = typeof item.family === 'string' ? item.family.trim() : '';
+  const parameters = parametersOf(item.parameters);
   return {
     id: id.slice(0, 200),
     ...(label ? { label: label.slice(0, 200) } : {}),
     voices: voicesOf(item),
-    tasks: tasksOf(item, entry.protocol === 'sing' ? [TASK_SING] : [TASK_TTS]),
+    tasks: tasksOf(item, protocolOf(entry) === 'sing' ? [TASK_SING] : [TASK_TTS]),
     service: entry.id,
     source,
+    ...(family ? { family: family.slice(0, 200) } : {}),
+    ...(parameters ? { parameters } : {}),
   };
 }
 
@@ -121,12 +169,98 @@ function mergeModels(current: ModelRecord[], incoming: ModelRecord[]): ModelReco
     byId.set(model.id, {
       ...existing,
       ...(model.label ? { label: model.label } : {}),
+      ...(model.family ? { family: model.family } : {}),
+      ...(model.parameters ? { parameters: model.parameters } : {}),
       voices: [...new Set([...existing.voices, ...model.voices])],
       tasks: [...new Set([...existing.tasks, ...model.tasks])],
       source: existing.source === 'api' ? existing.source : model.source,
     });
   }
   return [...byId.values()];
+}
+
+/** family/id 归一到只留字母数字,用来匹配 spec 文件名与 server.json 的 family。 */
+function modelKey(value: string | undefined): string {
+  return (value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+interface SpecMeta {
+  family: string;
+  label?: string;
+  tasks: string[];
+  voices: string[];
+  parameters?: ModelParameter[];
+}
+
+function specMetaOf(data: unknown): SpecMeta | null {
+  if (!isPlainObject(data)) return null;
+  // 0.9.3 的 spec 有的带 schema_version=1,有的没有;只拒绝明确不同的版本与非 TTS。
+  if (data.schema_version !== undefined && data.schema_version !== 1) return null;
+  if (typeof data.category === 'string' && data.category !== 'tts') return null;
+  const family = typeof data.family === 'string' ? data.family.trim() : '';
+  const label = typeof data.display_name === 'string' ? data.display_name.trim() : '';
+  const options = isPlainObject(data.options) ? data.options : {};
+  const parameters = parametersOf(options.request);
+  return {
+    family,
+    ...(label ? { label: label.slice(0, 200) } : {}),
+    tasks: tasksOf(data, [TASK_TTS]),
+    voices: voicesOf(data),
+    ...(parameters ? { parameters } : {}),
+  };
+}
+
+function specMatches(meta: SpecMeta, model: ModelRecord): boolean {
+  if (!meta.family) return true;
+  const family = modelKey(meta.family);
+  if (!family) return true;
+  return [model.family, model.id].some((value) => {
+    const key = modelKey(value);
+    return key !== '' && (key === family || key.startsWith(family) || family.startsWith(key));
+  });
+}
+
+/**
+ * 面板只展示 profile 真正接受的参数;spec 只补说明与默认值。
+ * 这样 Ming 的模板字段不会出现在模型页,也不会让语音发出会被服务拒绝的 options。
+ */
+function profileParameters(
+  entry: ServiceEntry,
+  model: ModelRecord,
+  meta: SpecMeta | undefined,
+): ModelParameter[] | undefined {
+  const profile = resolveProfile(entry, model.id);
+  const options = (profile.options ?? []).filter((option) => option.ui !== false);
+  if (!options.length) return undefined;
+  const spec = new Map((meta?.parameters ?? []).map((parameter) => [parameter.name, parameter]));
+  return options.map((option) => {
+    const parameter: ModelParameter = { name: option.name, type: option.type };
+    const description = option.description ?? spec.get(option.name)?.description;
+    if (description) parameter.description = description;
+    const values = option.values ?? spec.get(option.name)?.values;
+    if (values?.length) parameter.values = values;
+    const fallback = spec.get(option.name);
+    const value = option.default ?? fallback?.default;
+    if (value !== undefined) parameter.default = value;
+    const min = option.min ?? fallback?.min;
+    if (min !== undefined) parameter.min = min;
+    const max = option.max ?? fallback?.max;
+    if (max !== undefined) parameter.max = max;
+    return parameter;
+  });
+}
+
+function enrichModel(entry: ServiceEntry, model: ModelRecord, meta: SpecMeta | undefined): ModelRecord {
+  const parameters = profileParameters(entry, model, meta);
+  const next: ModelRecord = {
+    ...model,
+    ...(meta?.label ? { label: meta.label } : {}),
+    ...(meta && meta.tasks.length ? { tasks: meta.tasks } : {}),
+    voices: [...new Set([...model.voices, ...(meta?.voices ?? [])])],
+  };
+  if (parameters) next.parameters = parameters;
+  else delete next.parameters;
+  return next;
 }
 
 function configuredModels(entry: ServiceEntry): ModelRecord[] {
@@ -212,7 +346,7 @@ export class ModelCatalog {
       this.byService.set(entry.id, catalog);
       return catalog;
     }
-    if (entry.protocol === 'none') {
+    if (protocolOf(entry) === 'none') {
       const catalog: ServiceCatalog = {
         service: entry.id,
         models: previous?.models ?? seeded,
@@ -225,10 +359,13 @@ export class ModelCatalog {
     }
 
     try {
-      let models = entry.models?.length ? seeded : await this.fetchModels(entry);
-      if (entry.kind === 'audiocpp' || entry.protocol === 'audiocpp') {
-        models = mergeModels(models, await this.readAudiocppSpecs(entry));
+      let models: ModelRecord[];
+      if (protocolOf(entry) === 'audiocpp') {
+        models = await this.collectAudiocppModels(entry);
         models = await this.attachVoices(entry, models);
+      } else {
+        // openai/custom/sing 只认真实回应;条目显式配置的 models 代替 /v1/models。
+        models = entry.models?.length ? seeded : await this.fetchModels(entry);
       }
       models = models.slice(0, this.maxModels);
       const catalog: ServiceCatalog = {
@@ -260,7 +397,7 @@ export class ModelCatalog {
   }
 
   private async fetchModels(entry: ServiceEntry): Promise<ModelRecord[]> {
-    const data = await timedFetch(this.io.fetch, apiUrl(serviceBaseUrl(entry), '/models'), {
+    const data = await timedFetch(this.io.fetch, apiUrl(endpointUrl(entry), '/models'), {
       method: 'GET',
       headers: authHeaders(this.secretOf(entry)),
     }, this.timeoutMs, undefined, async (res) => {
@@ -288,7 +425,7 @@ export class ModelCatalog {
       const batch = targets.slice(start, start + VOICE_BATCH);
       await Promise.all(batch.map(async (model) => {
         try {
-          const url = new URL(apiUrl(serviceBaseUrl(entry), '/audio/voices'));
+          const url = new URL(apiUrl(endpointUrl(entry), '/audio/voices'));
           url.searchParams.set('model', model.id);
           const voices = await timedFetch(this.io.fetch, url.toString(), {
             method: 'GET',
@@ -306,33 +443,91 @@ export class ModelCatalog {
     return models.map((model) => updated.get(model.id) ?? model);
   }
 
-  /** server.json + model_specs/*.json;任何文件读失败都只跳过它。 */
-  private async readAudiocppSpecs(entry: ServiceEntry): Promise<ModelRecord[]> {
-    const serverDir = entry.serverDir?.trim() ?? '';
-    const configPath = entry.configPath?.trim() ?? '';
-    const baseDir = serverDir || (configPath ? dirname(configPath) : '');
-    if (!baseDir) return [];
+  /**
+   * audiocpp 的真实模型 = server.json 声明的模型 ∪ /v1/models 的 id。
+   * 两边都失败才报错;只有一边可用时用那一边。spec 只补元数据。
+   */
+  private async collectAudiocppModels(entry: ServiceEntry): Promise<ModelRecord[]> {
+    let models: ModelRecord[] = [];
+    let sourceOk = false;
+    let failure: unknown;
 
-    const found: ModelRecord[] = [];
-    const serverPath = configPath || join(baseDir, 'server.json');
-    const serverText = await this.readGuarded(serverPath);
-    if (serverText) found.push(...this.modelsFromServerJson(entry, parseJson(serverText)));
+    const serverPath = serverJsonPath(entry);
+    if (serverPath) {
+      const serverText = await this.readGuarded(serverPath);
+      const serverData = serverText ? parseJson(serverText) : null;
+      if (isPlainObject(serverData)) {
+        sourceOk = true;
+        models = mergeModels(models, this.modelsFromServerJson(entry, serverData));
+      }
+    }
+    try {
+      models = mergeModels(models, await this.fetchModels(entry));
+      sourceOk = true;
+    } catch (error) {
+      failure = error;
+    }
+    if (!sourceOk) throw failure ?? new Error('no model source');
+
+    const specs = await this.loadSpecs(entry, models);
+    return models.map((model) => enrichModel(entry, model, specs.get(model.id)));
+  }
+
+  /** 只读实际模型对应的 spec;按 family 或 id 匹配文件名,不枚举成模型。 */
+  private async loadSpecs(
+    entry: ServiceEntry,
+    models: readonly ModelRecord[],
+  ): Promise<Map<string, SpecMeta>> {
+    const found = new Map<string, SpecMeta>();
+    const baseDir = entry.serverDir?.trim() ?? '';
+    if (!baseDir || !models.length) return found;
 
     const specsDir = join(baseDir, 'model_specs');
-    let files: string[] = [];
+    let files: string[];
     try {
-      files = await this.io.readdir(specsDir);
+      files = (await this.io.readdir(specsDir))
+        .filter((name) => extname(name).toLowerCase() === '.json');
     } catch {
-      files = [];
+      return found;
     }
+    const byKey = new Map<string, string>();
     for (const name of files) {
-      if (extname(name).toLowerCase() !== '.json') continue;
-      const path = join(specsDir, name);
-      const text = await this.readGuarded(path);
-      if (!text) continue;
-      found.push(...this.modelsFromSpec(entry, parseJson(text), name));
+      const key = modelKey(basename(name, extname(name)));
+      if (key && !byKey.has(key)) byKey.set(key, name);
+    }
+    if (!byKey.size) return found;
+
+    const cache = new Map<string, SpecMeta | null>();
+    for (const model of models) {
+      const candidates: string[] = [];
+      for (const value of [model.family, model.id]) {
+        const key = modelKey(value);
+        if (!key) continue;
+        const exact = byKey.get(key);
+        if (exact) {
+          candidates.push(exact);
+          continue;
+        }
+        for (const [fileKey, name] of byKey) {
+          // index-tts2.5 这类 id 在还没有专属 spec 时退化到同族 spec。
+          if (fileKey.startsWith(key) || key.startsWith(fileKey)) candidates.push(name);
+        }
+      }
+      for (const name of new Set(candidates)) {
+        if (!cache.has(name)) cache.set(name, await this.readSpecMeta(join(specsDir, name)));
+        const meta = cache.get(name);
+        if (meta && specMatches(meta, model)) {
+          found.set(model.id, meta);
+          break;
+        }
+      }
     }
     return found;
+  }
+
+  private async readSpecMeta(path: string): Promise<SpecMeta | null> {
+    const text = await this.readGuarded(path);
+    return text ? specMetaOf(parseJson(text)) : null;
   }
 
   private async readGuarded(path: string): Promise<string | null> {
@@ -380,34 +575,6 @@ export class ModelCatalog {
       } else if (models[0]) {
         models[0] = { ...models[0], voices: [...new Set([...models[0].voices, ...globalVoices])] };
       }
-    }
-    return models;
-  }
-
-  private modelsFromSpec(entry: ServiceEntry, data: unknown, fileName: string): ModelRecord[] {
-    if (!isPlainObject(data)) return [];
-    if (data.schema_version !== 1 || data.category !== 'tts') return [];
-    const fallbackId = basename(fileName, extname(fileName));
-    const models: ModelRecord[] = [];
-    if (Array.isArray(data.models)) {
-      for (const item of data.models) {
-        const record = recordOf(item, entry, 'spec');
-        if (record) models.push(record);
-      }
-    }
-    const nested = data.model;
-    const topIsModel = typeof data.id === 'string' || typeof data.name === 'string'
-      || typeof data.model === 'string' || (!Array.isArray(data.models) && !isPlainObject(nested));
-    if (topIsModel) {
-      const id = typeof data.id === 'string'
-        ? data.id
-        : typeof data.model === 'string' ? data.model : fallbackId;
-      const top = recordOf({ ...data, id }, entry, 'spec');
-      if (top) models.push(top);
-    }
-    if (isPlainObject(nested)) {
-      const record = recordOf({ ...nested, id: nested.id ?? data.id ?? fallbackId }, entry, 'spec');
-      if (record) models.push(record);
     }
     return models;
   }

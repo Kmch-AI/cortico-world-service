@@ -85,14 +85,14 @@ describe('service World', () => {
   it('启动前网关、服务与模型灯都是 offline', () => {
     const { world } = make();
     const ui = world.webUi('zh');
-    expect(ui.label).toBe('服务');
+    expect(ui.label).toBe('Kmch AI · 服务');
     expect(ui.lamps?.map((lamp) => lamp.state)).toEqual(['offline', 'offline', 'offline']);
     expect(ui.badges).toEqual([
       { label: 'port', value: 0, tone: 'plain' },
       { label: 'services', value: 1, tone: 'plain' },
     ]);
     expect(SERVICE_DEFAULTS.port).toBe(9883);
-    expect(world.webUi('en').label).toBe('Service');
+    expect(world.webUi('en').label).toBe('Kmch AI · 服务');
   });
 
   it('autoStart=false 时只探活外部服务并发状态事件', async () => {
@@ -141,12 +141,14 @@ describe('service World', () => {
   it('多个服务按顺序启动,灯与徽标汇总', async () => {
     const entries = [
       serviceEntry({
-        id: 'alpha', label: 'Alpha', kind: 'custom', protocol: 'openai',
-        serverDir: '', binary: 'C:/bin/alpha.exe', args: '--port 9001', port: 9001, options: {},
+        id: 'alpha', name: 'Alpha', type: 'custom',
+        endpoint: 'http://127.0.0.1:9001',
+        serverDir: '', binary: 'C:/bin/alpha.exe', args: '--port 9001', options: {},
       }),
       serviceEntry({
-        id: 'beta', label: 'Beta', kind: 'custom', protocol: 'openai',
-        serverDir: '', binary: 'C:/bin/beta.exe', args: '--port 9002', port: 9002, options: {},
+        id: 'beta', name: 'Beta', type: 'custom',
+        endpoint: 'http://127.0.0.1:9002',
+        serverDir: '', binary: 'C:/bin/beta.exe', args: '--port 9002', options: {},
       }),
     ];
     const { world, h } = makeMulti(entries);
@@ -164,30 +166,12 @@ describe('service World', () => {
     expect(h.children.every((child) => child.killed)).toBe(true);
   });
 
-  it('配置组只声明标量路径,不含 services 数组', () => {
+  it('不声明配置组:网关标量只在 services 面板里编辑', () => {
     const { world } = make();
-    const groups = world.webUi('zh').config ?? [];
-    const entries = groups.flatMap((group) => Object.entries(group.schema.properties));
-    const paths = entries.map(([path]) => path);
-    expect(paths.every((path) => path.startsWith('worlds.service.'))).toBe(true);
-    expect(paths).not.toContain('worlds.service.services');
-    expect(paths).toEqual(expect.arrayContaining([
-      'worlds.service.enabled',
-      'worlds.service.host',
-      'worlds.service.port',
-      'worlds.service.tokenSecret',
-      'worlds.service.allowQueryToken',
-      'worlds.service.requestTimeoutSec',
-      'worlds.service.defaultSpeechModel',
-    ]));
-    for (const path of [
-      'worlds.service.host',
-      'worlds.service.port',
-      'worlds.service.tokenSecret',
-      'worlds.service.allowQueryToken',
-    ]) {
-      expect(entries.find(([key]) => key === path)?.[1]['x-hot']).toBe(false);
-    }
-    expect(entries.every(([, property]) => property.type !== 'array')).toBe(true);
+    const ui = world.webUi('zh');
+    expect(ui.config).toBeUndefined();
+    expect(ui.panels).toEqual([
+      { id: 'services', title: '服务', getMethods: ['state', 'models', 'logs'] },
+    ]);
   });
 });

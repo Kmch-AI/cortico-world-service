@@ -5,7 +5,7 @@ import type { AudioFormat, TtsAudio, VoiceOption } from '../types.ts';
 /** 基础地址可以带 `/v1`,也可以不带;两种都拼出同一个接口。 */
 export function apiUrl(base: string, path: string): string {
   const trimmed = (base || '').trim().replace(/\/+$/, '');
-  if (!trimmed) throw ServiceError.invalid('service baseUrl is empty');
+  if (!trimmed) throw ServiceError.invalid('service endpoint is empty');
   const suffix = path.startsWith('/') ? path : `/${path}`;
   return /\/v1$/.test(trimmed) ? `${trimmed}${suffix}` : `${trimmed}/v1${suffix}`;
 }

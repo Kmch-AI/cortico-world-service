@@ -5,44 +5,38 @@ export type Backend = 'cuda' | 'cpu' | 'vulkan' | 'hip' | 'metal';
 /** 0.1.x 的旧名,等同 {@link Backend}。 */
 export type AudiocppBackend = Backend;
 
-/** 进程托管与启动预设。`custom` 不套用任何内置启动参数。 */
-export type ServiceKind = 'audiocpp' | 'llamacpp' | 'systemone' | 'svc' | 'custom';
+/** 服务类型;决定启动预设与 HTTP 协议,见 `protocolOf`。 */
+export type ServiceType = 'audiocpp' | 'openai' | 'sing' | 'llamacpp' | 'systemone' | 'svc' | 'custom';
 
 /** HTTP 方言。`none` 表示只托管进程,不代理请求。 */
 export type ServiceProtocol = 'audiocpp' | 'openai' | 'custom' | 'sing' | 'none';
 
-/** `worlds.service.services` 的一项。`kind` 决定启动预设,`protocol` 决定 HTTP 方言。 */
+/** `worlds.service.services` 的一项。 */
 export interface ServiceEntry {
+  /** 服务端生成的稳定键;日志、状态与 API 路径用它。 */
   id: string;
-  label?: string;
-  kind: ServiceKind;
-  protocol: ServiceProtocol;
+  /** 用户填写的唯一身份。 */
+  name: string;
+  type: ServiceType;
   enabled: boolean;
+  /** 一个 URL,例如 `http://127.0.0.1:8000` 或 `https://host/v1`。 */
+  endpoint: string;
   /** false = 只探活,不拉起进程。 */
   manage: boolean;
   /** World 启动时一并拉起。 */
   autoStart: boolean;
   /** 进程非预期退出后自动重启。 */
   restartOnExit: boolean;
-  host?: string;
-  port?: number;
-  /** 远程端点;留空按 host:port。 */
-  baseUrl?: string;
-  /** 探活路径;留空按 kind。 */
-  healthPath?: string;
   /** 可执行文件所在目录,也是进程的工作目录。 */
   serverDir?: string;
-  /** 可执行文件;相对路径按 serverDir 解析,留空按 kind 取默认名。 */
+  /** 可执行文件;相对路径按 serverDir 解析,留空按 type 取预设名。 */
   binary?: string;
-  configPath?: string;
   /** 追加到命令行的参数,按空白分隔(支持引号)。 */
   args?: string;
   /** 上游 Bearer token 的 .env 变量名。 */
   secretName?: string;
-  /** 'auto' 或内置/自定义 profile id。 */
+  /** 'auto' 或内置 profile id。 */
   modelProfile?: string;
-  /** 面板里的模型 profile 覆盖;按 id 键,只存覆盖字段。 */
-  modelProfiles?: Record<string, Partial<ModelProfile>>;
   /** 空 = 从 /v1/models 现取。 */
   models?: string[];
   /** 该服务的默认 options。 */
@@ -108,8 +102,13 @@ export interface ModelProfileVariant {
 export interface ModelProfileOption {
   name: string;
   type: 'string' | 'enum' | 'bool' | 'int' | 'float';
+  description?: string;
   values?: string[];
   default?: unknown;
+  min?: number;
+  max?: number;
+  /** false = 只由语音语义控制,不在模型参数面板里单独暴露。 */
+  ui?: boolean;
 }
 
 export interface ModelProfileSpeedLevel {
@@ -149,6 +148,27 @@ export interface VoiceOption {
   label: string;
 }
 
+export type ModelParameterType =
+  | 'string'
+  | 'enum'
+  | 'bool'
+  | 'int'
+  | 'float'
+  | 'string_list'
+  | 'path'
+  | 'path_list';
+
+/** 模型请求参数的元数据;来自 `model_specs/*.json` 的 `options.request`。 */
+export interface ModelParameter {
+  name: string;
+  type: ModelParameterType;
+  description?: string;
+  values?: string[];
+  default?: unknown;
+  min?: number;
+  max?: number;
+}
+
 /** 服务目录里的一项模型;`service` 是拥有它的条目 id。 */
 export interface ModelRecord {
   id: string;
@@ -157,6 +177,10 @@ export interface ModelRecord {
   tasks: string[];
   service: string;
   source: 'config' | 'api' | 'spec';
+  /** server.json 声明的模型族;用来匹配 model_specs 里的元数据。 */
+  family?: string;
+  /** 上游请求参数;只含该模型真正接受的字段。 */
+  parameters?: ModelParameter[];
 }
 
 /** 一个服务条目的最近一次发现结果;失败时保留上次结果并标 stale。 */

@@ -19,15 +19,13 @@ const dataDir = process.argv[4] ?? mkdtempSync(join(tmpdir(), 'service-host-'));
 const ownData = process.argv[4] === undefined;
 const entry: ServiceEntry = {
   id: 'audiocpp',
-  label: 'audiocpp',
-  kind: 'audiocpp',
-  protocol: 'audiocpp',
+  name: 'audiocpp',
+  type: 'audiocpp',
   enabled: true,
+  endpoint: `http://127.0.0.1:${port}`,
   manage: true,
   autoStart: true,
   restartOnExit: true,
-  host: '127.0.0.1',
-  port,
   serverDir,
   options: { backend: 'cuda', device: 0, ui: false, startTimeoutSec: 120 },
 };

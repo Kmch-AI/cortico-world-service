@@ -1,12 +1,16 @@
 /**
- * 一个推理服务条目的进程管理:先探活,活着就接管;没活着按 kind 预设拉起。
+ * 一个推理服务条目的进程管理:先探活,活着就接管;没活着按 type 预设拉起。
  * 探活、启动、退出、重启都只改这里的状态,World 只读状态和收回调。
  */
 import { spawn } from 'node:child_process';
 import { createWriteStream, existsSync, mkdirSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import type { Logger } from 'cortico/core/types.ts';
-import type { Phase, ServiceEntry, ServiceKind, ServiceStatus } from './types.ts';
+import {
+  endpointUrl, healthPathOf, healthUrl, hostPort, protocolOf, serverJsonPath,
+} from './entry.ts';
+import { apiUrl } from './protocol/http.ts';
+import type { Phase, ServiceEntry, ServiceStatus, ServiceType } from './types.ts';
 
 export interface ChildLike {
   pid?: number;
@@ -52,8 +56,6 @@ export interface SupervisorOptions {
 /** 重启退避:5 秒、15 秒、60 秒。 */
 const RESTART_DELAYS = [5_000, 15_000, 60_000];
 const HEALTH_TIMEOUT_MS = 3000;
-const DEFAULT_HOST = '127.0.0.1';
-const DEFAULT_AUDIOCPP_PORT = 8000;
 const DEFAULT_START_TIMEOUT_SEC = 60;
 const DEFAULT_POLL_MS = 5000;
 const HEALTHY_STATES = new Set(['ok', 'ready', 'healthy', 'up', 'online']);
@@ -80,21 +82,6 @@ function optionBoolean(entry: ServiceEntry, key: string, fallback: boolean): boo
   return typeof value === 'boolean' ? value : fallback;
 }
 
-/** 服务条目的监听端口;audiocpp 沿用 0.1.x 的 8000。 */
-export function servicePort(entry: ServiceEntry): number | null {
-  if (typeof entry.port === 'number' && entry.port > 0) return entry.port;
-  return entry.kind === 'audiocpp' ? DEFAULT_AUDIOCPP_PORT : null;
-}
-
-/** 条目的 HTTP 根地址;显式 baseUrl 优先。 */
-export function serviceBaseUrl(entry: ServiceEntry): string {
-  const explicit = entry.baseUrl?.trim();
-  if (explicit) return explicit.replace(/\/+$/, '');
-  const host = entry.host?.trim() || DEFAULT_HOST;
-  const port = servicePort(entry);
-  return port ? `http://${host}:${port}` : `http://${host}`;
-}
-
 /** 服务日志写在数据目录的 service-<id>.log。 */
 export function serviceLogPath(entry: ServiceEntry, dataDir: string): string {
   const safe = entry.id.replace(/[^A-Za-z0-9._-]+/g, '_') || 'service';
@@ -112,33 +99,23 @@ export function idleServiceStatus(entry: ServiceEntry): ServiceStatus {
     pid: null,
     models: 0,
     backend: '',
-    baseUrl: serviceBaseUrl(entry),
+    baseUrl: endpointUrl(entry),
     restarts: 0,
   };
 }
 
-function defaultBinary(kind: ServiceKind): string {
+/** 有预设可执行名的类型;其余类型需要操作者给 binary。 */
+function defaultBinary(type: ServiceType): string {
   const exe = process.platform === 'win32' ? '.exe' : '';
-  switch (kind) {
+  switch (type) {
     case 'audiocpp': return `audiocpp_server${exe}`;
     case 'llamacpp': return `llama-server${exe}`;
     default: return '';
   }
 }
 
-function healthPath(entry: ServiceEntry): string {
-  const raw = entry.healthPath?.trim() || '/health';
-  return raw.startsWith('/') ? raw : `/${raw}`;
-}
-
-function healthUrl(entry: ServiceEntry): string {
-  const raw = entry.healthPath?.trim();
-  if (raw && /^https?:\/\//i.test(raw)) return raw;
-  return `${serviceBaseUrl(entry)}${healthPath(entry)}`;
-}
-
 function defaultBackend(entry: ServiceEntry): string {
-  return entry.kind === 'audiocpp' ? optionString(entry, 'backend') || 'cuda' : '';
+  return entry.type === 'audiocpp' ? optionString(entry, 'backend') || 'cuda' : '';
 }
 
 function looksLikePath(value: string): boolean {
@@ -148,8 +125,10 @@ function looksLikePath(value: string): boolean {
 function resolveCommand(entry: ServiceEntry): { command: string; checkExists: boolean } | { error: string } {
   const serverDir = entry.serverDir?.trim() ?? '';
   const raw = entry.binary?.trim() ?? '';
-  const binary = raw || defaultBinary(entry.kind);
-  if (!binary) return { error: 'binary is empty' };
+  const binary = raw || defaultBinary(entry.type);
+  if (!binary) {
+    return { error: `binary is required for type ${entry.type}` };
+  }
   if (!raw && !serverDir) return { error: 'serverDir is empty' };
   const command = isAbsolute(binary) || !serverDir ? binary : join(serverDir, binary);
   return { command, checkExists: looksLikePath(command) };
@@ -209,7 +188,7 @@ export class Supervisor {
   }
 
   baseUrl(): string {
-    return serviceBaseUrl(this.entry);
+    return endpointUrl(this.entry);
   }
 
   status(): ServiceStatus {
@@ -227,7 +206,7 @@ export class Supervisor {
     };
   }
 
-  /** 启动:先探活,已经活着就接管;否则按 kind 预设拉起。不抛错,失败写进状态。 */
+  /** 启动:先探活,已经活着就接管;否则按 type 预设拉起。不抛错,失败写进状态。 */
   async start(): Promise<void> {
     if (this.starting) return this.starting;
     this.starting = this.startOnce().finally(() => { this.starting = null; });
@@ -243,7 +222,7 @@ export class Supervisor {
       this.models = healthy.models;
       this.backend = healthy.backend || defaultBackend(this.entry);
       this.onlineSince = this.deps.now();
-      this.setPhase('online', `${this.backend || this.entry.kind} · ${this.models} models`);
+      this.setPhase('online', `${this.backend || this.entry.type} · ${this.models} models`);
       this.startMonitor();
       return;
     }
@@ -294,6 +273,14 @@ export class Supervisor {
     child.once('exit', (code, signal) => this.onExit(child, code, signal));
     child.once('error', (error) => this.onExit(child, null, null, error));
 
+    // 没有 HTTP 协议(llamacpp)的条目无法探活:进程起来就算在线。
+    if (healthPathOf(this.entry.type) === null) {
+      this.onlineSince = this.deps.now();
+      this.setPhase('online', `${this.entry.type} · process running`);
+      this.startMonitor();
+      return;
+    }
+
     const startTimeoutSec = optionNumber(this.entry, 'startTimeoutSec', DEFAULT_START_TIMEOUT_SEC);
     const ok = await this.waitHealthy(startTimeoutSec * 1000);
     if (this.stopping || this.childExited) {
@@ -314,16 +301,15 @@ export class Supervisor {
     this.backend = health?.backend || defaultBackend(this.entry);
     // 计数只在稳定在线 60 秒后归零(refresh),否则 5s/15s/60s 退避会退化成无限 5s 重试。
     this.onlineSince = this.deps.now();
-    this.setPhase('online', `${this.backend || this.entry.kind} · ${this.models} models`);
+    this.setPhase('online', `${this.backend || this.entry.type} · ${this.models} models`);
     this.startMonitor();
   }
 
-  /** kind 决定启动参数;custom / systemone / svc 只用条目自己的 args。 */
+  /** audiocpp 有启动预设;其余类型只用条目自己的 args。 */
   private launchArgs(): string[] {
-    if (this.entry.kind !== 'audiocpp') return splitArgs(this.entry.args ?? '');
+    if (this.entry.type !== 'audiocpp') return splitArgs(this.entry.args ?? '');
 
-    const host = this.entry.host?.trim() || DEFAULT_HOST;
-    const port = servicePort(this.entry) ?? DEFAULT_AUDIOCPP_PORT;
+    const { host, port } = hostPort(this.entry);
     const args = [
       '--host', host,
       '--port', String(port),
@@ -338,9 +324,8 @@ export class Supervisor {
     if (!optionBoolean(this.entry, 'ui', true)) args.push('--no-ui');
     args.push(...splitArgs(this.entry.args ?? ''));
 
-    const serverDir = this.entry.serverDir?.trim() ?? '';
-    const configPath = this.entry.configPath?.trim() || (serverDir ? join(serverDir, 'server.json') : '');
-    if (configPath && this.deps.exists(configPath)) args.unshift('--config', configPath);
+    const configFile = serverJsonPath(this.entry);
+    if (configFile && this.deps.exists(configFile)) args.unshift('--config', configFile);
     return args;
   }
 
@@ -409,35 +394,60 @@ export class Supervisor {
     return false;
   }
 
-  private async health(): Promise<{ models: number; backend: string } | null> {
+  private async probe(url: string): Promise<{
+    status: number;
+    health: { models: number; backend: string } | null;
+  }> {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), HEALTH_TIMEOUT_MS);
     try {
-      const res = await this.deps.fetch(healthUrl(this.entry), { method: 'GET', signal: ctrl.signal });
-      if (!res.ok) return null;
+      const res = await this.deps.fetch(url, { method: 'GET', signal: ctrl.signal });
+      if (!res.ok) return { status: res.status, health: null };
       const data = await res.json().catch(() => null) as {
         status?: unknown;
         models?: unknown;
+        data?: unknown;
         backend?: unknown;
       } | null;
-      if (!data) return { models: 0, backend: '' };
-      if (typeof data.status === 'string' && !HEALTHY_STATES.has(data.status.toLowerCase())) return null;
+      if (!data) return { status: res.status, health: { models: 0, backend: '' } };
+      if (typeof data.status === 'string' && !HEALTHY_STATES.has(data.status.toLowerCase())) {
+        return { status: res.status, health: null };
+      }
+      const source = data.models ?? data.data;
       let models = 0;
-      if (typeof data.models === 'number') models = data.models;
-      else if (Array.isArray(data.models)) models = data.models.length;
-      else if (data.models && typeof data.models === 'object') models = Object.keys(data.models).length;
+      if (typeof source === 'number') models = source;
+      else if (Array.isArray(source)) models = source.length;
+      else if (source && typeof source === 'object') models = Object.keys(source).length;
       const backend = typeof data.backend === 'string' ? data.backend : '';
-      return { models, backend };
+      return { status: res.status, health: { models, backend } };
     } catch {
-      return null;
+      return { status: 0, health: null };
     } finally {
       clearTimeout(timer);
     }
   }
 
+  /**
+   * `/health` 是默认探活;openai / custom 的 `/health` 回 404 时,
+   * 退回 OpenAI 形状的 `/v1/models`。
+   */
+  private async health(): Promise<{ models: number; backend: string } | null> {
+    const url = healthUrl(this.entry);
+    if (!url) return null;
+    const first = await this.probe(url);
+    if (first.health) return first.health;
+    const protocol = protocolOf(this.entry);
+    if (first.status === 404 && (protocol === 'openai' || protocol === 'custom')) {
+      const fallback = await this.probe(apiUrl(endpointUrl(this.entry), '/models'));
+      return fallback.health;
+    }
+    return null;
+  }
+
   /** 探一次活,只改状态,不拉起进程。 */
   async refresh(): Promise<void> {
     if (this.stopping || this.phase === 'starting') return;
+    if (healthPathOf(this.entry.type) === null) return;
     const health = await this.health();
     if (this.stopping) return;
     if (health) {
@@ -445,7 +455,7 @@ export class Supervisor {
       this.backend = health.backend || defaultBackend(this.entry);
       if (this.phase !== 'online') {
         this.onlineSince = this.deps.now();
-        this.setPhase('online', `${this.backend || this.entry.kind} · ${health.models} models`);
+        this.setPhase('online', `${this.backend || this.entry.type} · ${health.models} models`);
       }
       if (this.onlineSince !== null && this.deps.now() - this.onlineSince > 60_000) this.restarts = 0;
       return;

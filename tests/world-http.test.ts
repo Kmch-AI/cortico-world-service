@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -73,14 +73,13 @@ function build(
 function speechEntry(url: string): ServiceEntry {
   return {
     id: 'tts',
-    label: 'Test TTS',
-    kind: 'audiocpp',
-    protocol: 'audiocpp',
+    name: 'Test TTS',
+    type: 'audiocpp',
     enabled: true,
+    endpoint: url,
     manage: false,
     autoStart: false,
     restartOnExit: false,
-    baseUrl: url,
     secretName: 'UPSTREAM_TOKEN',
   };
 }
@@ -88,14 +87,13 @@ function speechEntry(url: string): ServiceEntry {
 function singEntry(url: string): ServiceEntry {
   return {
     id: 'singer',
-    label: 'Singer',
-    kind: 'custom',
-    protocol: 'sing',
+    name: 'Singer',
+    type: 'sing',
     enabled: true,
+    endpoint: url,
     manage: false,
     autoStart: false,
     restartOnExit: false,
-    baseUrl: url,
     models: ['song-1'],
     options: { path: '/sing' },
   };
@@ -173,6 +171,119 @@ describe('service World HTTP gateway', () => {
 
     await world.stop();
     await expect(fetch(`${base}/health`)).rejects.toThrow();
+  });
+
+  it('audiocpp 只列真实模型,spec 只补参数,/v1/models 带 parameters', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'audiocpp-svc-'));
+    dirs.push(dir);
+    const specsDir = join(dir, 'model_specs');
+    mkdirSync(specsDir);
+    writeFileSync(join(dir, 'server.json'), JSON.stringify({
+      models: [
+        {
+          id: 'ming3-tts',
+          family: 'ming3_tts',
+          task: 'tts',
+          voice_presets: { '4016': {} },
+          default_voice_preset: '4016',
+        },
+        {
+          id: 'index-tts2',
+          family: 'index_tts2',
+          task: 'tts',
+          voice_presets: { '4016': {} },
+          default_voice_preset: '4016',
+        },
+      ],
+    }));
+    writeFileSync(join(specsDir, 'ming3_tts.json'), JSON.stringify({
+      family: 'ming3_tts',
+      display_name: 'Ming 3.0 TTS 0.5B',
+      category: 'tts',
+      tasks: ['tts', 'clone'],
+      options: { request: [{ name: 'template_name', type: 'enum', values: ['tts', 'basic'] }] },
+    }));
+    writeFileSync(join(specsDir, 'index_tts2.json'), JSON.stringify({
+      family: 'index_tts2',
+      display_name: 'IndexTTS2',
+      category: 'tts',
+      tasks: ['tts', 'clone'],
+      options: {
+        request: [
+          { name: 'text', type: 'string' },
+          { name: 'language', type: 'string' },
+          {
+            name: 'emotion_alpha', type: 'float', description: 'Blend.', min: 0, max: 1, default: 1,
+          },
+          { name: 'top_k', type: 'int', min: 1, default: 30 },
+        ],
+      },
+    }));
+    writeFileSync(join(specsDir, 'chatterbox.json'), JSON.stringify({
+      family: 'chatterbox', display_name: 'Chatterbox', category: 'tts',
+    }));
+
+    const upstream = await startUpstream((req, res) => {
+      if (req.url === '/health') json(res, 200, { status: 'ok', models: 2 });
+      else if (req.url === '/v1/models') {
+        json(res, 200, { object: 'list', data: [{ id: 'ming3-tts' }, { id: 'index-tts2' }] });
+      } else if (req.url?.startsWith('/v1/audio/voices')) {
+        json(res, 200, { voices: ['4016'] });
+      } else if (req.url === '/v1/audio/speech') {
+        audio(res, wavBytes(0.5));
+      } else {
+        json(res, 404, { error: 'no route' });
+      }
+    });
+    servers.push(upstream);
+
+    const world = build([{ ...speechEntry(upstream.url), serverDir: dir }]);
+    await world.start(new FakeHost());
+    const base = `http://127.0.0.1:${world.gatewayStatus().port}`;
+
+    const models = await (await fetch(`${base}/v1/models`)).json() as {
+      data: Array<{
+        id: string; display_name?: string; tasks: string[]; voices: string[];
+        parameters?: Array<{ name: string; type: string; min?: number; max?: number }>;
+      }>;
+    };
+    expect(models.data.map((model) => model.id)).toEqual(['ming3-tts', 'index-tts2']);
+    const index = models.data.find((model) => model.id === 'index-tts2')!;
+    expect(index).toMatchObject({
+      display_name: 'IndexTTS2',
+      tasks: ['tts', 'clone'],
+      voices: ['4016'],
+    });
+    expect(index.parameters).toHaveLength(18);
+    expect(index.parameters?.[0]).toMatchObject({ name: 'emotion_alpha', type: 'float', min: 0, max: 1 });
+    expect(index.parameters?.some((item) => item.name === 'text_chunk_mode')).toBe(true);
+
+    const speech = await fetch(`${base}/v1/audio/speech`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'index-tts2',
+        input: 'hello',
+        voice: '4016',
+        emotion: 'happy',
+        options: { emotion_alpha: 0.5, text_chunk_mode: 'tag_aware' },
+      }),
+    });
+    expect(speech.status).toBe(200);
+    const call = upstream.requests.filter((item) => item.url === '/v1/audio/speech').at(-1)!;
+    const body = JSON.parse(call.body) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      input: 'hello', voice: '4016', response_format: 'wav',
+    });
+    expect(body.options).toMatchObject({
+      emotion_alpha: 0.5,
+      use_emotion_text: true,
+      emotion_text: 'happy',
+      top_k: 30,
+      text_chunk_mode: 'tag_aware',
+    });
+
+    await world.stop();
   });
 
   it('请求不带 model 时用 defaultSpeechModel,即使目录里没有它', async () => {

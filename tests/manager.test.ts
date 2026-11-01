@@ -23,24 +23,22 @@ function services(): ServiceEntry[] {
   return [
     serviceEntry({
       id: 'alpha',
-      label: 'Alpha',
-      kind: 'custom',
-      protocol: 'openai',
+      name: 'Alpha',
+      type: 'custom',
+      endpoint: 'http://127.0.0.1:9001',
       serverDir: '',
       binary: 'C:/bin/alpha.exe',
       args: '--port 9001',
-      port: 9001,
       options: {},
     }),
     serviceEntry({
       id: 'beta',
-      label: 'Beta',
-      kind: 'custom',
-      protocol: 'openai',
+      name: 'Beta',
+      type: 'custom',
+      endpoint: 'http://127.0.0.1:9002',
       serverDir: '',
       binary: 'C:/bin/beta.exe',
       args: '--port 9002',
-      port: 9002,
       options: {},
     }),
   ];
@@ -73,7 +71,15 @@ describe('Manager', () => {
     const entries = [
       services()[0]!,
       { ...services()[1]!, autoStart: false },
-      { ...serviceEntry({ id: 'gamma', kind: 'custom', binary: 'C:/bin/gamma.exe', serverDir: '', options: {} }), enabled: false },
+      { ...serviceEntry({
+        id: 'gamma',
+        name: 'Gamma',
+        type: 'custom',
+        endpoint: 'http://127.0.0.1:9003',
+        binary: 'C:/bin/gamma.exe',
+        serverDir: '',
+        options: {},
+      }), enabled: false },
     ];
     const h = multiHarness(entries, { adopt: ['beta'], healthyOnLaunch: true });
     const manager = new Manager({
@@ -126,11 +132,11 @@ describe('Manager', () => {
       },
     });
 
-    await manager.setServices([{ ...entries[0]!, label: 'Renamed' }]);
+    await manager.setServices([{ ...entries[0]!, name: 'Renamed' }]);
     expect(saved).toHaveLength(1);
     expect(saved[0]?.map((entry) => entry.id)).toEqual(['alpha']);
     expect(manager.status()).toHaveLength(1);
-    expect(manager.status()[0]?.entry.label).toBe('Renamed');
+    expect(manager.status()[0]?.entry.name).toBe('Renamed');
   });
 
   it('logs 返回文件尾部,文件不存在时为空', async () => {

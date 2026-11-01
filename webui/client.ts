@@ -1,59 +1,79 @@
 /**
- * 「服务」面板:服务列表与网关两段。
+ * 「服务」面板:一个主从视图。
  *
- * 数据面只走 `ctx.invoke`;DOM 只走 `ctx.ui` 原语。列表轮询状态,表单与令牌抽屉
- * 单独维护自己的输入,不会被轮询覆盖。
+ * 顶部选单只有「网关」与各服务名;下面是选中项的状态与表单。状态每 4 秒刷新,
+ * 表单只在切换选中项或保存后重建,轮询不覆盖正在输入的内容。
+ * 数据面只走 `ctx.invoke`;DOM 只走 `ctx.ui` 原语。
  */
-import type { WebUiClientBundle, WebUiPanel, WebUiPanelContext } from 'cortico/web/shared/client-panel.ts';
+import type {
+  WebUiCheckbox, WebUiClientBundle, WebUiPanel, WebUiPanelContext,
+} from 'cortico/web/shared/client-panel.ts';
 import {
-  SERVICE_KINDS, SERVICE_PROTOCOLS,
-  type PanelLogs, type PanelModels, type PanelService, type PanelServiceEntry, type PanelState,
+  SERVICE_TYPES,
+  type PanelLogs, type PanelService, type PanelServiceEntry, type PanelState,
   type PanelTokenResult,
 } from '../src/panel.ts';
+import type { ServiceEntry, ServiceType } from '../src/types.ts';
 import { panelText, type PanelText } from './strings.ts';
 import './style.css';
 
+const GATEWAY = 'gateway';
+
+/** 类型切换且地址为空时的默认地址;其余类型没有可猜的端口。 */
+const DEFAULT_ENDPOINTS: Partial<Record<ServiceType, string>> = {
+  audiocpp: 'http://127.0.0.1:8000',
+  sing: 'http://127.0.0.1:9882',
+};
+
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
-function setPill(el: HTMLSpanElement, text: string, tone: 'on' | 'off' | 'plain' = 'plain'): void {
-  el.textContent = text;
-  el.className = tone === 'on' ? 'pill on' : tone === 'off' ? 'pill off' : 'pill';
+type Tone = 'on' | 'off' | 'plain';
+
+interface PhaseView {
+  text: string;
+  tone: Tone;
+  bad?: boolean;
 }
 
-function setBadPill(el: HTMLSpanElement, text: string): void {
-  el.textContent = text;
-  el.className = 'pill svc-bad';
-}
-
-function phaseText(T: PanelText, status: PanelService): string {
-  if (!status.entry.enabled) return T.disabled;
+/** 服务条目的状态文案;停用优先于进程阶段。 */
+function servicePhase(T: PanelText, status: PanelService): PhaseView {
+  if (!status.entry.enabled) return { text: T.disabled, tone: 'off' };
   switch (status.phase) {
-    case 'online': return T.phaseOnline;
-    case 'starting': return T.phaseStarting;
-    case 'error': return T.phaseError;
-    default: return T.phaseOff;
-  }
-}
-
-function phaseTone(status: PanelService): 'on' | 'off' | 'plain' {
-  if (!status.entry.enabled) return 'off';
-  if (status.phase === 'online') return 'on';
-  return status.phase === 'error' ? 'off' : 'plain';
-}
-
-function gatewayPhase(T: PanelText, status: PanelState['gateway']): { text: string; tone: 'on' | 'off' | 'plain' } {
-  switch (status.status) {
-    case 'ok': return { text: T.phaseOnline, tone: 'on' };
+    case 'online': return { text: T.phaseOnline, tone: 'on' };
     case 'starting': return { text: T.phaseStarting, tone: 'plain' };
-    case 'degraded': return { text: T.phaseDegraded, tone: 'plain' };
-    case 'error': return { text: T.phaseError, tone: 'off' };
+    case 'error': return { text: T.phaseError, tone: 'off', bad: true };
     default: return { text: T.phaseOff, tone: 'off' };
   }
 }
 
-function defaultPort(entry: PanelServiceEntry): number | null {
-  if (typeof entry.port === 'number' && entry.port > 0) return entry.port;
-  return entry.kind === 'audiocpp' ? 8000 : null;
+function gatewayPhase(T: PanelText, gw: PanelState['gateway']): PhaseView {
+  switch (gw.status) {
+    case 'ok': return { text: T.phaseOnline, tone: 'on' };
+    case 'starting': return { text: T.phaseStarting, tone: 'plain' };
+    case 'degraded': return { text: T.phaseDegraded, tone: 'plain' };
+    case 'error': return { text: T.phaseError, tone: 'off', bad: true };
+    default: return { text: T.phaseOff, tone: 'off' };
+  }
+}
+
+function typeNote(T: PanelText, type: ServiceType): string {
+  switch (type) {
+    case 'audiocpp': return T.typeAudiocpp;
+    case 'openai': return T.typeOpenai;
+    case 'sing': return T.typeSing;
+    case 'llamacpp': return T.typeLlamacpp;
+    case 'systemone': return T.typeSystemone;
+    case 'svc': return T.typeSvc;
+    case 'custom': return T.typeCustom;
+  }
+}
+
+type ServicePayload = Record<string, unknown>;
+type FormRead = { value: ServicePayload } | { error: string };
+
+interface ServiceForm {
+  el: HTMLElement;
+  read(): FormRead;
 }
 
 const servicesPanel: WebUiPanel = {
@@ -61,551 +81,628 @@ const servicesPanel: WebUiPanel = {
     const { ui } = ctx;
     const T = panelText(ctx.language);
 
+    // ---- 顶部:二级菜单 + 添加 ----
     const root = ui.h('div', 'svc-panel');
-    const bar = ui.rowbar();
-    const tabs = ui.segmented(
-      [{ value: 'services', label: T.tabServices }, { value: 'gateway', label: T.tabGateway }],
-      {
-        value: 'services',
-        size: 'sm',
-        onSelect: (value) => {
-          view = value === 'gateway' ? 'gateway' : 'services';
-          applyView();
-        },
+    const pickerRow = ui.rowbar();
+    pickerRow.classList.add('svc-topbar');
+    const picker = ui.select({
+      value: GATEWAY,
+      onChange: (value) => {
+        selected = value || GATEWAY;
+        renderDetail();
       },
-    );
-    const refreshBtn = ui.button(T.refresh, { size: 'sm', onClick: () => void refresh() });
-    bar.append(tabs.el, ui.h('span', 'grow'), refreshBtn);
+    });
+    picker.classList.add('svc-picker');
+    picker.setAttribute('aria-label', T.pickerLabel);
+    pickerRow.append(picker, ui.button(T.add, {
+      variant: 'primary',
+      size: 'sm',
+      onClick: () => openAdd(),
+    }));
 
     const msg = ui.msgline();
-
-    // ---- 服务列表 ----
-    const servicesView = ui.h('div', 'svc-view');
-    const tools = ui.rowbar();
-    const addBtn = ui.button(T.add, { variant: 'primary', size: 'sm', onClick: () => openForm(null) });
-    const discoverBtn = ui.button(T.discover, { size: 'sm', onClick: () => void discoverAll() });
-    tools.append(addBtn, discoverBtn, ui.h('span', 'grow'));
-    const list = ui.h('div', 'svc-list');
-    list.append(ui.placeholder(T.loading));
-    const formHost = ui.h('div');
-    servicesView.append(tools, list, formHost);
-
-    // ---- 网关 ----
-    const gatewayView = ui.h('div', 'svc-view');
-    gatewayView.hidden = true;
-    const gwSheet = ui.sheet({ title: T.gateway });
-    const gwStatus = ui.pill('');
-    const gwReady = ui.pill('');
-    const gwAddress = ui.h('span', 'svc-mono');
-    const gwPort = ui.h('span', 'svc-mono');
-    const gwServices = ui.h('span', 'svc-mono');
-    const gwModels = ui.h('span', 'svc-mono');
-    const gwVersion = ui.h('span', 'svc-mono');
-    const gwUptime = ui.h('span', 'svc-mono');
-    const gwToken = ui.h('span', 'svc-chiprow');
-    const gwRequired = ui.pill('');
-    const gwQuery = ui.pill('');
-    const gwDefault = ui.h('span', 'svc-mono');
-    gwSheet.body.append(ui.kv([
-      { k: T.rowStatus, v: gwStatus },
-      { k: T.rowReady, v: gwReady },
-      { k: T.rowAddress, v: gwAddress },
-      { k: T.rowPort, v: gwPort },
-      { k: T.rowServices, v: gwServices },
-      { k: T.rowModels, v: gwModels },
-      { k: T.rowVersion, v: gwVersion },
-      { k: T.rowUptime, v: gwUptime },
-      { k: T.rowToken, v: gwToken },
-      { k: T.rowTokenRequired, v: gwRequired },
-      { k: T.rowQueryToken, v: gwQuery },
-      { k: T.rowDefaultModel, v: gwDefault },
-    ]));
-
-    const tokenName = ui.input({ placeholder: 'SERVICE_TOKEN' });
-    const tokenValue = ui.input({ type: 'password', placeholder: T.tokenUnset });
-    const tokenMsg = ui.msgline();
-    const tokenSetBtn = ui.button(T.tokenSet, {
-      variant: 'primary', size: 'sm', onClick: () => void saveGatewayToken(),
-    });
-    const tokenClearBtn = ui.button(T.tokenClear, {
-      variant: 'danger', size: 'sm', onClick: () => void clearGatewayToken(),
-    });
-    const tokenRow = ui.h('div', 'svc-token-row');
-    tokenRow.append(ui.field(T.tokenName, tokenName), ui.field(T.tokenValue, tokenValue));
-    const tokenActs = ui.actions();
-    tokenActs.append(tokenSetBtn, tokenClearBtn);
-    gwSheet.body.append(tokenRow, tokenActs, tokenMsg);
-    gatewayView.append(gwSheet.el);
-
-    root.append(bar, msg, servicesView, gatewayView);
+    msg.hidden = true;
+    const detail = ui.h('div', 'svc-detail');
+    detail.append(ui.placeholder(T.loading));
+    root.append(pickerRow, msg, detail);
     ctx.root.append(root);
 
     let state: PanelState | null = null;
-    let view: 'services' | 'gateway' = 'services';
-    let formOpen = false;
-    let lastSecretName: string | null = null;
+    let selected = GATEWAY;
+    let pickerKey = '';
+    let detailKey = '';
+    let paintStatus: (() => void) | null = null;
     let refreshFailed = false;
 
-    applyView();
-    void refresh();
-    ctx.interval(() => void refresh(), 4000);
+    const mono = (text: string): HTMLElement => ui.h('span', 'svc-mono', text);
 
-    // -----------------------------------------------------------------------
+    const tokenCell = (set: boolean, name: string | undefined): HTMLElement => {
+      const row = ui.h('span', 'svc-chiprow');
+      row.append(
+        ui.pill(set ? T.tokenSetState : T.tokenUnset, set ? 'on' : 'off'),
+        ui.h('span', 'svc-mono', name || T.none),
+      );
+      return row;
+    };
 
-    function applyView(): void {
-      servicesView.hidden = view !== 'services';
-      gatewayView.hidden = view !== 'gateway';
-    }
+    const phasePill = (view: PhaseView): HTMLSpanElement => {
+      const pill = ui.pill(view.text, view.tone);
+      if (view.bad) pill.className = 'pill svc-bad';
+      return pill;
+    };
+
+    /** 一格控件 + 下方一句说明。 */
+    const block = (
+      label: string,
+      control: HTMLElement,
+      note: string | HTMLElement,
+      wide = false,
+    ): HTMLElement => {
+      const box = ui.h('div', wide ? 'svc-field svc-wide' : 'svc-field');
+      box.append(ui.field(label, control), typeof note === 'string' ? ui.h('div', 'svc-note', note) : note);
+      return box;
+    };
+
+    const checkBlock = (box: WebUiCheckbox, note: string): HTMLElement => {
+      const wrap = ui.h('div', 'svc-field');
+      wrap.append(box.el, ui.h('div', 'svc-note', note));
+      return wrap;
+    };
+
+    const pathRow = (input: HTMLInputElement, kind: 'file' | 'directory'): HTMLElement => {
+      const row = ui.h('div', 'svc-path');
+      row.append(input, ui.button(T.choose, {
+        size: 'sm',
+        onClick: () => {
+          void ctx.pickPath({ kind, currentPath: input.value }).then((chosen) => {
+            if (chosen) input.value = chosen;
+          });
+        },
+      }));
+      return row;
+    };
 
     function fail(err: unknown): void {
+      msg.hidden = false;
       msg.textContent = `${T.failed}: ${errText(err)}`;
       msg.classList.add('bad');
     }
 
+    function info(text: string): void {
+      msg.hidden = false;
+      msg.textContent = text;
+      msg.classList.remove('bad');
+    }
+
     function clearMsg(): void {
+      msg.hidden = true;
       msg.textContent = '';
       msg.classList.remove('bad');
     }
 
-    async function refresh(): Promise<void> {
+    // -----------------------------------------------------------------------
+
+    function syncPicker(): void {
+      if (!state) return;
+      const key = state.services.map((item) => `${item.entry.id}\u0000${item.entry.name}`).join('\u0001');
+      if (key !== pickerKey) {
+        pickerKey = key;
+        const options: Array<{ value: string; label: string }> = [
+          { value: GATEWAY, label: T.gateway },
+          ...state.services.map((item) => ({ value: item.entry.id, label: item.entry.name })),
+        ];
+        picker.replaceChildren(...options.map((option) => {
+          const el = ui.h('option', null, option.label);
+          el.value = option.value;
+          return el;
+        }));
+      }
+      picker.value = selected;
+    }
+
+    async function refresh(rebuild = false): Promise<void> {
       try {
-        state = await ctx.invoke<PanelState>('state');
+        const next = await ctx.invoke<PanelState>('state');
+        if (ctx.signal.aborted) return;
+        state = next;
         if (refreshFailed) {
           refreshFailed = false;
           clearMsg();
         }
-        if (!formOpen) renderList();
-        renderGateway();
+        if (selected !== GATEWAY && !state.services.some((item) => item.entry.id === selected)) {
+          selected = GATEWAY;
+          rebuild = true;
+        }
+        syncPicker();
+        if (rebuild || detailKey !== selected) renderDetail();
+        else paintStatus?.();
       } catch (err) {
-        refreshFailed = true;
-        fail(err);
-      }
-    }
-
-    function renderList(): void {
-      if (!state) return;
-      if (!state.services.length) {
-        list.replaceChildren(ui.placeholder(T.empty));
-        return;
-      }
-      const ids = state.services.map((status) => status.entry.id);
-      list.replaceChildren(...state.services.map((status, index) => serviceRow(status, ids, index)));
-    }
-
-    function serviceRow(status: PanelService, ids: string[], index: number): HTMLElement {
-      const entry = status.entry;
-      const row = ui.h('div', 'svc-item');
-      const head = ui.h('div', 'svc-head');
-      const lamp = ui.h('span', 'svc-lamp');
-      lamp.dataset.state = entry.enabled ? status.phase : 'off';
-      head.append(lamp, ui.h('span', 'svc-name', entry.label?.trim() || entry.id));
-      if (entry.label?.trim() && entry.label.trim() !== entry.id) {
-        head.append(ui.h('span', 'svc-id', entry.id));
-      }
-      const phase = ui.pill('');
-      if (status.phase === 'error' && entry.enabled) setBadPill(phase, T.phaseError);
-      else setPill(phase, phaseText(T, status), phaseTone(status));
-      head.append(phase, ui.pill(entry.kind, 'plain'), ui.pill(entry.protocol, 'plain'));
-      if (!entry.manage) head.append(ui.pill(T.unmanaged, 'plain'));
-      if (status.external) head.append(ui.pill(T.external, 'plain'));
-      const port = defaultPort(entry);
-      if (port !== null) head.append(ui.chip(String(port), 'plain'));
-      head.append(ui.chip(`${T.rowModels} ${status.models}`, 'plain'));
-      if (entry.tokenSet) head.append(ui.pill(T.tokenSetState, 'on'));
-
-      const acts = ui.h('span', 'svc-actions');
-      if (entry.enabled && status.phase !== 'online' && status.phase !== 'starting') {
-        acts.append(ui.button(T.start, { size: 'sm', onClick: () => act('start', [entry.id]) }));
-      }
-      if (status.phase === 'online' || status.phase === 'starting') {
-        acts.append(ui.button(T.stop, { size: 'sm', onClick: () => act('stop', [entry.id]) }));
-      }
-      if (entry.enabled) {
-        acts.append(ui.button(T.restart, { size: 'sm', onClick: () => act('restart', [entry.id]) }));
-      }
-      acts.append(ui.button(T.probe, { size: 'sm', onClick: () => act('probe', [entry.id]) }));
-      acts.append(ui.button(T.logs, { size: 'sm', onClick: () => void openLogs(entry.id) }));
-      if (entry.secretName?.trim()) {
-        acts.append(ui.button(T.token, { size: 'sm', onClick: () => openTokenDrawer(entry) }));
-      }
-      acts.append(ui.button(T.edit, { size: 'sm', onClick: () => openForm(entry) }));
-      if (index > 0) {
-        const up = ui.button('↑', { size: 'sm', onClick: () => moveService(ids, index, -1) });
-        up.title = T.moveUp;
-        acts.append(up);
-      }
-      if (index < ids.length - 1) {
-        const down = ui.button('↓', { size: 'sm', onClick: () => moveService(ids, index, 1) });
-        down.title = T.moveDown;
-        acts.append(down);
-      }
-      acts.append(ui.button(T.delete, {
-        variant: 'danger', size: 'sm', onClick: () => void removeService(entry.id),
-      }));
-      head.append(acts);
-
-      row.append(head, ui.h('div', 'svc-meta', [status.baseUrl, status.detail].filter(Boolean).join(' · ')));
-      return row;
-    }
-
-    function renderGateway(): void {
-      if (!state) return;
-      const gw = state.gateway;
-      const phase = gatewayPhase(T, gw);
-      if (gw.status === 'error') setBadPill(gwStatus, phase.text);
-      else setPill(gwStatus, phase.text, phase.tone);
-      setPill(gwReady, gw.ready ? T.yes : T.no, gw.ready ? 'on' : 'off');
-      gwAddress.textContent = gw.baseUrl;
-      gwPort.textContent = String(gw.port);
-      gwServices.textContent = `${gw.online}/${gw.total}`;
-      gwModels.textContent = String(gw.models);
-      gwVersion.textContent = gw.version;
-      gwUptime.textContent = ui.fmt.duration(gw.uptimeSec * 1000);
-      gwToken.replaceChildren(
-        ui.pill(gw.tokenSet ? T.tokenSetState : T.tokenUnset, gw.tokenSet ? 'on' : 'off'),
-        ui.h('span', 'svc-mono', gw.secretName || T.none),
-      );
-      setPill(gwRequired, gw.tokenRequired ? T.yes : T.no, gw.tokenRequired ? 'on' : 'plain');
-      setPill(gwQuery, gw.allowQueryToken ? T.yes : T.no, gw.allowQueryToken ? 'on' : 'plain');
-      gwDefault.textContent = gw.defaultSpeechModel || T.none;
-      if (gw.secretName !== lastSecretName && ctx.root.ownerDocument?.activeElement !== tokenName) {
-        tokenName.value = gw.secretName;
-        lastSecretName = gw.secretName;
-      }
-      tokenName.readOnly = Boolean(gw.secretName);
-    }
-
-    function act(method: string, args: unknown[]): void {
-      void (async () => {
-        try {
-          await ctx.invoke(method, args);
-          clearMsg();
-          await refresh();
-        } catch (err) {
+        if (!ctx.signal.aborted) {
+          refreshFailed = true;
           fail(err);
         }
-      })();
-    }
-
-    async function discoverAll(): Promise<void> {
-      clearMsg();
-      try {
-        const result = await ctx.invoke<PanelModels>('discover', []);
-        ui.toast(T.discovered(result.models.length), 'ok');
-        await refresh();
-      } catch (err) {
-        fail(err);
       }
     }
 
-    async function openLogs(id: string): Promise<void> {
+    function renderDetail(): void {
+      if (!state) return;
+      paintStatus = null;
+      detail.replaceChildren();
+      if (selected !== GATEWAY) {
+        const service = state.services.find((item) => item.entry.id === selected);
+        if (service) {
+          detailKey = selected;
+          renderService(service);
+          return;
+        }
+        selected = GATEWAY;
+      }
+      detailKey = GATEWAY;
+      renderGateway();
+    }
+
+    // ---- 网关 ----
+
+    function renderGateway(): void {
+      const card = ui.sheet({ title: T.gateway });
+      const statusHost = ui.h('div', 'svc-status');
+      const notes = ui.h('div', 'svc-notes');
+      card.body.append(statusHost, notes);
+
+      const paint = (): void => {
+        if (!state) return;
+        const gw = state.gateway;
+        statusHost.replaceChildren(ui.kv([
+          { k: T.rowStatus, v: phasePill(gatewayPhase(T, gw)) },
+          { k: T.rowReady, v: ui.pill(gw.ready ? T.yes : T.no, gw.ready ? 'on' : 'off') },
+          { k: T.rowAddress, v: mono(gw.baseUrl) },
+          { k: T.rowVersion, v: mono(gw.version) },
+          { k: T.rowUptime, v: mono(ui.fmt.duration(gw.uptimeSec * 1000)) },
+          { k: T.rowServices, v: mono(`${gw.online}/${gw.total}`) },
+          { k: T.rowModels, v: mono(String(gw.models)) },
+          { k: T.rowToken, v: tokenCell(gw.tokenSet, gw.secretName) },
+        ]));
+        notes.replaceChildren(...(gw.restartRequired ? [ui.h('div', 'svc-note', T.restartNeeded)] : []));
+      };
+      paintStatus = paint;
+      paint();
+
+      const gw = state!.gateway;
+      const form = ui.h('div', 'svc-form');
+      const enabled = ui.checkbox(T.flagEnabled, { checked: gw.enabled });
+      const port = ui.input({ type: 'number', value: String(gw.port) });
+      port.min = '1';
+      port.max = '65535';
+      port.step = '1';
+      const secretName = ui.input({ value: gw.secretName, cls: 'mono', placeholder: 'SERVICE_TOKEN' });
+      const tokenValue = ui.input({ type: 'password', placeholder: gw.tokenSet ? '••••••••' : T.tokenUnset });
+      const tokenRow = ui.h('div', 'svc-token-row');
+      tokenRow.append(
+        tokenValue,
+        ui.button(T.tokenSet, {
+          size: 'sm',
+          variant: 'primary',
+          onClick: () => void setGatewayToken(secretName.value, tokenValue),
+        }),
+        ui.button(T.tokenClear, {
+          size: 'sm',
+          variant: 'danger',
+          onClick: () => void clearGatewayToken(secretName.value),
+        }),
+      );
+      const queryToken = ui.checkbox(T.flagAllowQueryToken, { checked: gw.allowQueryToken });
+      const timeout = ui.input({ type: 'number', value: String(gw.requestTimeoutSec) });
+      timeout.min = '5';
+      timeout.max = '3600';
+      timeout.step = '1';
+      const defaultModel = ui.input({ value: gw.defaultSpeechModel, cls: 'mono' });
+
+      form.append(
+        checkBlock(enabled, T.enabledNote),
+        block(T.fieldPort, port, T.portNote),
+        block(T.fieldTokenName, secretName, T.tokenNameNote),
+        block(T.fieldTokenValue, tokenRow, T.tokenValueNote),
+        checkBlock(queryToken, T.allowQueryTokenNote),
+        block(T.fieldTimeout, timeout, T.timeoutNote),
+        block(T.fieldDefaultModel, defaultModel, T.defaultModelNote),
+      );
+
+      async function save(): Promise<void> {
+        const portValue = Number(port.value);
+        if (!Number.isInteger(portValue) || portValue < 1 || portValue > 65535) {
+          fail(T.badPort);
+          return;
+        }
+        const timeoutValue = Number(timeout.value);
+        if (!Number.isInteger(timeoutValue) || timeoutValue < 5 || timeoutValue > 3600) {
+          fail(T.badTimeout);
+          return;
+        }
+        try {
+          await ctx.invoke('saveGateway', [{
+            enabled: enabled.checked,
+            port: portValue,
+            tokenSecret: secretName.value.trim(),
+            allowQueryToken: queryToken.checked,
+            requestTimeoutSec: timeoutValue,
+            defaultSpeechModel: defaultModel.value.trim(),
+          }]);
+          if (ctx.signal.aborted) return;
+          ui.toast(T.saved, 'ok');
+          clearMsg();
+          await refresh(true);
+        } catch (err) {
+          if (!ctx.signal.aborted) fail(err);
+        }
+      }
+
+      const actions = ui.actions();
+      actions.append(ui.h('span', 'grow'), ui.button(T.save, {
+        variant: 'primary',
+        onClick: () => void save(),
+      }));
+
+      card.body.append(form, actions);
+      detail.append(card.el);
+    }
+
+    async function setGatewayToken(nameRaw: string, valueInput: HTMLInputElement): Promise<void> {
+      const name = nameRaw.trim();
+      if (!name) {
+        fail(T.badTokenName);
+        return;
+      }
+      const value = valueInput.value.trim();
+      if (!value) {
+        fail(T.badToken);
+        return;
+      }
       try {
-        const result = await ctx.invoke<PanelLogs>('logs', [id, 200]);
-        ui.drawer(T.logsTitle(id), result.text || T.logsEmpty);
+        // 变量名和面板生效值不同时先落盘;setToken 只接受已配置的变量名。
+        if (state && name !== state.gateway.secretName) {
+          await ctx.invoke('saveGateway', [{ tokenSecret: name }]);
+        }
+        const result = await ctx.invoke<PanelTokenResult>('setToken', [name, value]);
+        if (ctx.signal.aborted) return;
+        valueInput.value = '';
+        ui.toast(result.tokenSet ? T.tokenSaved : T.tokenUnset, result.tokenSet ? 'ok' : 'bad');
+        info(T.tokenRestart);
+        await refresh(true);
       } catch (err) {
-        fail(err);
+        if (!ctx.signal.aborted) fail(err);
       }
     }
 
-    function moveService(ids: string[], index: number, delta: number): void {
-      const target = index + delta;
-      if (target < 0 || target >= ids.length) return;
-      const next = [...ids];
-      const [item] = next.splice(index, 1);
-      next.splice(target, 0, item!);
-      act('reorder', [next]);
+    async function clearGatewayToken(nameRaw: string): Promise<void> {
+      const name = nameRaw.trim() || state?.gateway.secretName || '';
+      if (!name) {
+        fail(T.badTokenName);
+        return;
+      }
+      try {
+        await ctx.invoke<PanelTokenResult>('setToken', [name, '']);
+        if (ctx.signal.aborted) return;
+        ui.toast(T.tokenCleared, 'ok');
+        info(T.tokenRestart);
+        await refresh(true);
+      } catch (err) {
+        if (!ctx.signal.aborted) fail(err);
+      }
     }
 
-    async function removeService(id: string): Promise<void> {
-      const confirmed = await ui.confirm({
-        title: T.deleteTitle(id),
-        body: T.deleteBody,
-        danger: true,
-      });
-      if (!confirmed) return;
-      act('remove', [id]);
-    }
+    // ---- 服务 ----
 
-    // ---- 添加 / 编辑 ----
-    function openForm(entry: PanelServiceEntry | null): void {
-      formOpen = true;
-      formHost.replaceChildren();
-      const sheet = ui.sheet({ title: entry ? T.editTitle : T.addTitle });
-
-      const idInput = ui.input({ value: entry?.id ?? '', disabled: entry !== null });
-      const labelInput = ui.input({ value: entry?.label ?? '' });
-      const kindSelect = ui.select({ value: entry?.kind ?? 'custom', options: SERVICE_KINDS });
-      const protocolSelect = ui.select({ value: entry?.protocol ?? 'openai', options: SERVICE_PROTOCOLS });
-      const hostInput = ui.input({ value: entry?.host ?? '', placeholder: '127.0.0.1' });
-      const portInput = ui.input({ type: 'number', value: entry?.port != null ? String(entry.port) : '' });
-      portInput.min = '1';
-      portInput.max = '65535';
-      const baseUrlInput = ui.input({ value: entry?.baseUrl ?? '', placeholder: 'http://127.0.0.1:8000' });
-      const healthInput = ui.input({ value: entry?.healthPath ?? '', placeholder: '/health' });
-      const serverDirInput = ui.input({ value: entry?.serverDir ?? '' });
-      const binaryInput = ui.input({ value: entry?.binary ?? '' });
-      const configInput = ui.input({ value: entry?.configPath ?? '' });
-      const argsInput = ui.input({ value: entry?.args ?? '', cls: 'mono' });
-      const secretInput = ui.input({ value: entry?.secretName ?? '', cls: 'mono' });
-      const profileInput = ui.input({ value: entry?.modelProfile ?? '', placeholder: 'auto' });
-      const profilesInput = ui.textarea({
-        value: entry?.modelProfiles ? JSON.stringify(entry.modelProfiles, null, 2) : '',
-        rows: 4,
+    /**
+     * 服务表单。`withProcess` 为 false 时只给新增用的最小集合:
+     * 名称、类型、地址、四个开关与高级字段;进程字段加完服务再到详情里填。
+     */
+    function buildServiceForm(initial: ServiceEntry | null, withProcess: boolean): ServiceForm {
+      const name = ui.input({ value: initial?.name ?? '' });
+      const type = ui.select({ value: initial?.type ?? 'custom', options: SERVICE_TYPES });
+      const typeNoteEl = ui.h('div', 'svc-note', typeNote(T, type.value as ServiceType));
+      type.addEventListener('change', () => {
+        const value = type.value as ServiceType;
+        typeNoteEl.textContent = typeNote(T, value);
+        const fallback = DEFAULT_ENDPOINTS[value];
+        if (fallback && !endpoint.value.trim()) endpoint.value = fallback;
+      }, { signal: ctx.signal });
+      const endpoint = ui.input({
+        value: initial?.endpoint ?? '',
         cls: 'mono',
+        placeholder: 'http://127.0.0.1:8000',
       });
-      const modelsInput = ui.input({ value: entry?.models?.join(', ') ?? '' });
-      const optionsInput = ui.textarea({
-        value: entry?.options ? JSON.stringify(entry.options, null, 2) : '',
+
+      const enabled = ui.checkbox(T.flagEnabled, { checked: initial?.enabled ?? true });
+      const manage = ui.checkbox(T.flagManage, { checked: initial?.manage ?? true });
+      const autoStart = ui.checkbox(T.flagAutoStart, { checked: initial?.autoStart ?? true });
+      const restartOnExit = ui.checkbox(T.flagRestartOnExit, { checked: initial?.restartOnExit ?? true });
+
+      const serverDir = ui.input({ value: initial?.serverDir ?? '' });
+      const binary = ui.input({ value: initial?.binary ?? '' });
+      const args = ui.input({ value: initial?.args ?? '', cls: 'mono' });
+      const process = ui.h('div', 'svc-form svc-wide');
+      process.append(
+        block(T.fieldServerDir, pathRow(serverDir, 'directory'), T.serverDirNote),
+        block(T.fieldBinary, pathRow(binary, 'file'), T.binaryNote),
+        block(T.fieldArgs, args, T.argsNote, true),
+      );
+      const syncProcess = (): void => { process.hidden = !manage.checked; };
+      manage.input.addEventListener('change', syncProcess, { signal: ctx.signal });
+
+      const secretName = ui.input({
+        value: initial?.secretName ?? '',
+        cls: 'mono',
+        placeholder: 'SERVICE_TOKEN',
+      });
+      const modelProfile = ui.input({ value: initial?.modelProfile ?? '', placeholder: 'auto' });
+      const models = ui.input({ value: initial?.models?.join(', ') ?? '' });
+      const options = ui.textarea({
+        value: initial?.options && Object.keys(initial.options).length
+          ? JSON.stringify(initial.options, null, 2)
+          : '',
         rows: 5,
         cls: 'mono',
       });
 
-      const enabledBox = ui.checkbox(T.flagEnabled, { checked: entry?.enabled ?? true });
-      const manageBox = ui.checkbox(T.flagManage, { checked: entry?.manage ?? true });
-      const autoBox = ui.checkbox(T.flagAutoStart, { checked: entry?.autoStart ?? true });
-      const restartBox = ui.checkbox(T.flagRestartOnExit, { checked: entry?.restartOnExit ?? true });
-
-      const pathControl = (input: HTMLInputElement, kind: 'file' | 'directory'): HTMLElement => {
-        input.style.flex = '1';
-        const pick = ui.button(T.choose, {
-          size: 'sm',
-          onClick: () => {
-            void ctx.pickPath({ kind, currentPath: input.value }).then((chosen) => {
-              if (chosen) input.value = chosen;
-            });
-          },
-        });
-        const row = ui.h('div', 'svc-path');
-        row.append(input, pick);
-        return row;
-      };
-      const wide = (node: HTMLElement): HTMLElement => {
-        const box = ui.h('div', 'svc-form-wide');
-        box.append(node);
-        return box;
-      };
+      const advanced = ui.foldSheet(`advanced-${initial?.id ?? 'new'}`, {
+        title: T.advancedTitle,
+        defaultOpen: false,
+      });
+      const advancedGrid = ui.h('div', 'svc-form');
+      advancedGrid.append(
+        block(T.fieldTokenName, secretName, T.secretNameNote),
+        block(T.fieldModelProfile, modelProfile, T.modelProfileNote),
+        block(T.fieldModels, models, T.modelsNote),
+        block(T.fieldOptions, options, T.optionsNote, true),
+      );
+      advanced.body.append(advancedGrid);
 
       const grid = ui.h('div', 'svc-form');
       grid.append(
-        ui.field(T.fieldId, idInput),
-        ui.field(T.fieldLabel, labelInput),
-        ui.field(T.fieldKind, kindSelect),
-        ui.field(T.fieldProtocol, protocolSelect),
-        ui.field(T.fieldHost, hostInput),
-        ui.field(T.fieldPort, portInput),
-        wide(ui.field(T.fieldBaseUrl, baseUrlInput)),
-        ui.field(T.fieldHealthPath, healthInput),
-        wide(ui.field(T.fieldServerDir, pathControl(serverDirInput, 'directory'))),
-        wide(ui.field(T.fieldBinary, pathControl(binaryInput, 'file'))),
-        wide(ui.field(T.fieldConfigPath, pathControl(configInput, 'file'))),
-        ui.field(T.fieldSecretName, secretInput),
-        ui.field(T.fieldModelProfile, profileInput),
-        wide(ui.field(T.fieldModelProfiles, profilesInput)),
-        wide(ui.field(T.fieldModels, modelsInput)),
-        wide(ui.field(T.fieldArgs, argsInput)),
-        wide(ui.field(T.fieldOptions, optionsInput)),
+        block(T.fieldName, name, T.nameNote),
+        block(T.fieldType, type, typeNoteEl),
+        block(T.fieldEndpoint, endpoint, T.endpointNote, true),
       );
 
       const flags = ui.h('div', 'svc-flags');
-      flags.append(enabledBox.el, manageBox.el, autoBox.el, restartBox.el);
+      flags.append(
+        checkBlock(enabled, T.serviceEnabledNote),
+        checkBlock(manage, T.manageNote),
+        checkBlock(autoStart, T.autoStartNote),
+        checkBlock(restartOnExit, T.restartOnExitNote),
+      );
 
-      const formMsg = ui.msgline();
-      const saveBtn = ui.button(T.save, { variant: 'primary', onClick: () => void save() });
-      const cancelBtn = ui.button(T.cancel, {
-        onClick: () => {
-          closeForm();
-          void refresh();
-        },
-      });
-      const actions = ui.actions();
-      actions.append(ui.h('span', 'grow'), cancelBtn, saveBtn);
+      const el = ui.h('div', 'svc-formwrap');
+      el.append(grid, flags, ...(withProcess ? [process] : []), advanced.el);
+      syncProcess();
 
-      sheet.body.append(grid, flags, actions, formMsg);
-      formHost.append(sheet.el);
-
-      function closeForm(): void {
-        formOpen = false;
-        formHost.replaceChildren();
-      }
-
-      async function save(): Promise<void> {
-        const id = idInput.value.trim();
-        if (!id) {
-          formMsg.textContent = T.badId;
-          formMsg.classList.add('bad');
-          return;
-        }
-        const portText = portInput.value.trim();
-        const port = portText ? Number(portText) : null;
-        if (port !== null && (!Number.isInteger(port) || port < 1 || port > 65535)) {
-          formMsg.textContent = T.badPort;
-          formMsg.classList.add('bad');
-          return;
-        }
-        let options: unknown = null;
-        const optionsText = optionsInput.value.trim();
+      function read(): FormRead {
+        const value = name.value.trim();
+        if (!value) return { error: T.badName };
+        const address = endpoint.value.trim();
+        if (!address) return { error: T.badEndpoint };
+        const optionsText = options.value.trim();
+        let parsedOptions: Record<string, unknown> | null = null;
         if (optionsText) {
           try {
-            options = JSON.parse(optionsText);
+            const parsed: unknown = JSON.parse(optionsText);
+            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('object');
+            parsedOptions = parsed as Record<string, unknown>;
           } catch {
-            formMsg.textContent = T.badOptions;
-            formMsg.classList.add('bad');
-            return;
+            return { error: T.badOptions };
           }
         }
-        let modelProfiles: unknown = null;
-        const profilesText = profilesInput.value.trim();
-        if (profilesText) {
-          try {
-            modelProfiles = JSON.parse(profilesText);
-          } catch {
-            formMsg.textContent = T.badProfiles;
-            formMsg.classList.add('bad');
-            return;
-          }
-          if (!modelProfiles || typeof modelProfiles !== 'object' || Array.isArray(modelProfiles)) {
-            formMsg.textContent = T.badProfiles;
-            formMsg.classList.add('bad');
-            return;
-          }
-        }
-        const models = modelsInput.value.split(/[\s,]+/).map((item) => item.trim()).filter(Boolean);
-        const payload: Record<string, unknown> = {
-          id,
-          kind: kindSelect.value,
-          protocol: protocolSelect.value,
-          enabled: enabledBox.checked,
-          manage: manageBox.checked,
-          autoStart: autoBox.checked,
-          restartOnExit: restartBox.checked,
-          port,
-          models: models.length ? models : null,
-          modelProfiles,
-          options,
+        const list = models.value.split(/[\s,]+/).map((item) => item.trim()).filter(Boolean);
+        return {
+          value: {
+            name: value,
+            type: type.value,
+            endpoint: address,
+            enabled: enabled.checked,
+            manage: manage.checked,
+            autoStart: autoStart.checked,
+            restartOnExit: restartOnExit.checked,
+            ...(withProcess ? {
+              serverDir: serverDir.value.trim() || null,
+              binary: binary.value.trim() || null,
+              args: args.value.trim() || null,
+            } : {}),
+            secretName: secretName.value.trim() || null,
+            modelProfile: modelProfile.value.trim() || null,
+            models: list.length ? list : null,
+            options: parsedOptions,
+          },
         };
-        const texts: Array<[string, string]> = [
-          ['label', labelInput.value],
-          ['host', hostInput.value],
-          ['baseUrl', baseUrlInput.value],
-          ['healthPath', healthInput.value],
-          ['serverDir', serverDirInput.value],
-          ['binary', binaryInput.value],
-          ['configPath', configInput.value],
-          ['args', argsInput.value],
-          ['secretName', secretInput.value],
-          ['modelProfile', profileInput.value],
-        ];
-        for (const [key, value] of texts) {
-          const text = value.trim();
-          payload[key] = text || null;
+      }
+
+      return { el, read };
+    }
+
+    function renderService(service: PanelService): void {
+      const id = service.entry.id;
+      const card = ui.sheet({ title: service.entry.name });
+      const statusHost = ui.h('div', 'svc-status');
+      const actionsHost = ui.h('div', 'svc-actions');
+      card.body.append(statusHost);
+
+      const paint = (): void => {
+        if (!state) return;
+        const current = state.services.find((item) => item.entry.id === id);
+        if (!current) return;
+        statusHost.replaceChildren(ui.kv([
+          { k: T.rowStatus, v: phasePill(servicePhase(T, current)) },
+          { k: T.rowDetail, v: mono(current.detail || T.none) },
+          { k: T.rowAddress, v: mono(current.baseUrl || T.none) },
+          { k: T.rowModels, v: mono(String(current.models)) },
+          { k: T.rowPid, v: mono(current.pid === null ? T.none : String(current.pid)) },
+          { k: T.rowRestarts, v: mono(String(current.restarts)) },
+          { k: T.rowToken, v: tokenCell(current.entry.tokenSet, current.entry.secretName) },
+        ]));
+
+        const order = state.services.map((item) => item.entry.id);
+        const index = order.indexOf(id);
+        const buttons: HTMLElement[] = [];
+        if (current.entry.enabled && current.phase !== 'online' && current.phase !== 'starting') {
+          buttons.push(ui.button(T.start, { size: 'sm', onClick: () => void act('start', [id]) }));
         }
-        saveBtn.disabled = true;
-        formMsg.textContent = '';
-        formMsg.classList.remove('bad');
-        try {
-          if (entry) await ctx.invoke('update', [entry.id, payload]);
-          else await ctx.invoke('add', [payload]);
-          ui.toast(T.saved, 'ok');
-          closeForm();
-          await refresh();
-        } catch (err) {
-          formMsg.textContent = errText(err);
-          formMsg.classList.add('bad');
-          saveBtn.disabled = false;
+        if (current.phase === 'online' || current.phase === 'starting') {
+          buttons.push(ui.button(T.stop, { size: 'sm', onClick: () => void act('stop', [id]) }));
         }
+        if (current.entry.enabled) {
+          buttons.push(ui.button(T.restart, { size: 'sm', onClick: () => void act('restart', [id]) }));
+        }
+        buttons.push(ui.button(T.probe, { size: 'sm', onClick: () => void act('probe', [id]) }));
+        buttons.push(ui.button(T.logs, {
+          size: 'sm',
+          onClick: () => void openLogs(id, current.entry.name),
+        }));
+        if (index > 0) {
+          const up = ui.button('↑', { size: 'sm', onClick: () => void moveService(id, -1) });
+          up.title = T.moveUp;
+          buttons.push(up);
+        }
+        if (index >= 0 && index < order.length - 1) {
+          const down = ui.button('↓', { size: 'sm', onClick: () => void moveService(id, 1) });
+          down.title = T.moveDown;
+          buttons.push(down);
+        }
+        buttons.push(ui.button(T.delete, {
+          variant: 'danger',
+          size: 'sm',
+          onClick: () => void removeService(id, current.entry.name),
+        }));
+        actionsHost.replaceChildren(...buttons);
+      };
+      paintStatus = paint;
+      paint();
+
+      const form = buildServiceForm(service.entry, true);
+      const saveRow = ui.actions();
+      saveRow.append(ui.h('span', 'grow'), ui.button(T.save, {
+        variant: 'primary',
+        onClick: () => void (async () => {
+          const result = form.read();
+          if ('error' in result) {
+            fail(result.error);
+            return;
+          }
+          try {
+            await ctx.invoke('update', [id, result.value]);
+            if (ctx.signal.aborted) return;
+            ui.toast(T.saved, 'ok');
+            clearMsg();
+            await refresh(true);
+          } catch (err) {
+            if (!ctx.signal.aborted) fail(err);
+          }
+        })(),
+      }));
+
+      card.body.append(form.el, saveRow, actionsHost);
+      detail.append(card.el);
+    }
+
+    async function act(method: string, args: unknown[], rebuild = false): Promise<void> {
+      try {
+        await ctx.invoke(method, args);
+        if (ctx.signal.aborted) return;
+        clearMsg();
+        await refresh(rebuild);
+      } catch (err) {
+        if (!ctx.signal.aborted) fail(err);
       }
     }
 
-    // ---- 服务令牌 ----
-    function openTokenDrawer(entry: PanelServiceEntry): void {
-      const name = entry.secretName?.trim();
-      if (!name) return;
-      const body = ui.h('div', 'svc-token');
-      const input = ui.input({
-        type: 'password',
-        placeholder: entry.tokenSet ? T.tokenSetState : T.tokenUnset,
+    async function openLogs(id: string, name: string): Promise<void> {
+      try {
+        const result = await ctx.invoke<PanelLogs>('logs', [id, 200]);
+        if (ctx.signal.aborted) return;
+        ui.drawer(T.logsTitle(name), result.text || T.logsEmpty);
+      } catch (err) {
+        if (!ctx.signal.aborted) fail(err);
+      }
+    }
+
+    async function moveService(id: string, delta: number): Promise<void> {
+      if (!state) return;
+      const ids = state.services.map((item) => item.entry.id);
+      const index = ids.indexOf(id);
+      const target = index + delta;
+      if (index < 0 || target < 0 || target >= ids.length) return;
+      const next = [...ids];
+      const [item] = next.splice(index, 1);
+      next.splice(target, 0, item!);
+      await act('reorder', [next], true);
+    }
+
+    async function removeService(id: string, name: string): Promise<void> {
+      const confirmed = await ui.confirm({
+        title: T.deleteTitle(name),
+        body: T.deleteBody,
+        danger: true,
       });
-      const line = ui.h('div', 'svc-token-row');
-      line.append(ui.field(`${T.tokenName} ${name}`, input));
-      const note = ui.msgline();
-      const setBtn = ui.button(T.tokenSet, { variant: 'primary', size: 'sm', onClick: () => void save() });
-      const clearBtn = ui.button(T.tokenClear, { variant: 'danger', size: 'sm', onClick: () => void clear() });
+      if (!confirmed || ctx.signal.aborted) return;
+      try {
+        await ctx.invoke('remove', [id]);
+        if (ctx.signal.aborted) return;
+        selected = GATEWAY;
+        ui.toast(T.deleted, 'ok');
+        clearMsg();
+        await refresh(true);
+      } catch (err) {
+        if (!ctx.signal.aborted) fail(err);
+      }
+    }
+
+    // ---- 添加 ----
+
+    function openAdd(): void {
+      const body = ui.h('div', 'svc-add');
+      const form = buildServiceForm(null, false);
+      const report = ui.msgline();
+      report.hidden = true;
       const actions = ui.actions();
-      actions.append(setBtn, clearBtn);
-      body.append(line, actions, note);
-      const drawer = ui.drawer(T.tokenTitle(entry.id), body);
+      const submit = ui.button(T.add, {
+        variant: 'primary',
+        onClick: () => void save(),
+      });
+      actions.append(ui.h('span', 'grow'), ui.button(T.cancel, {
+        onClick: () => drawer.dispose(),
+      }), submit);
+      body.append(form.el, report, actions);
+      const drawer = ui.drawer(T.addTitle, body);
 
       async function save(): Promise<void> {
-        const value = input.value.trim();
-        if (!value) {
-          note.textContent = T.badToken;
-          note.classList.add('bad');
+        const result = form.read();
+        if ('error' in result) {
+          report.hidden = false;
+          report.textContent = result.error;
+          report.classList.add('bad');
           return;
         }
+        submit.disabled = true;
         try {
-          const result = await ctx.invoke<PanelTokenResult>('setToken', [name, value]);
-          note.textContent = result.tokenSet ? T.tokenSaved : T.tokenUnset;
-          note.classList.toggle('bad', !result.tokenSet);
-          ui.toast(T.tokenSaved, 'ok');
+          const created = await ctx.invoke<PanelServiceEntry>('add', [result.value]);
+          if (ctx.signal.aborted) return;
+          ui.toast(T.saved, 'ok');
           drawer.dispose();
-          await refresh();
+          selected = created.id;
+          clearMsg();
+          await refresh(true);
         } catch (err) {
-          note.textContent = errText(err);
-          note.classList.add('bad');
-        }
-      }
-
-      async function clear(): Promise<void> {
-        try {
-          await ctx.invoke<PanelTokenResult>('setToken', [name, '']);
-          ui.toast(T.tokenCleared, 'ok');
-          drawer.dispose();
-          await refresh();
-        } catch (err) {
-          note.textContent = errText(err);
-          note.classList.add('bad');
+          if (ctx.signal.aborted) return;
+          report.hidden = false;
+          report.textContent = errText(err);
+          report.classList.add('bad');
+          submit.disabled = false;
         }
       }
     }
 
-    // ---- 网关令牌 ----
-    async function saveGatewayToken(): Promise<void> {
-      const name = tokenName.value.trim();
-      const value = tokenValue.value.trim();
-      if (!value) {
-        tokenMsg.textContent = T.badToken;
-        tokenMsg.classList.add('bad');
-        return;
-      }
-      tokenMsg.textContent = '';
-      tokenMsg.classList.remove('bad');
-      try {
-        const result = await ctx.invoke<PanelTokenResult>('setToken', [name, value]);
-        tokenValue.value = '';
-        tokenMsg.textContent = result.tokenSet ? T.tokenRestart : T.tokenUnset;
-        tokenMsg.classList.toggle('bad', !result.tokenSet);
-        ui.toast(T.tokenSaved, 'ok');
-        await refresh();
-      } catch (err) {
-        tokenMsg.textContent = errText(err);
-        tokenMsg.classList.add('bad');
-      }
-    }
+    // -----------------------------------------------------------------------
 
-    async function clearGatewayToken(): Promise<void> {
-      const name = tokenName.value.trim() || state?.gateway.secretName || '';
-      tokenMsg.textContent = '';
-      tokenMsg.classList.remove('bad');
-      try {
-        await ctx.invoke<PanelTokenResult>('setToken', [name, '']);
-        ui.toast(T.tokenCleared, 'ok');
-        tokenMsg.textContent = T.tokenRestart;
-        await refresh();
-      } catch (err) {
-        tokenMsg.textContent = errText(err);
-        tokenMsg.classList.add('bad');
-      }
-    }
+    void refresh(true);
+    ctx.interval(() => void refresh(), 4000);
   },
 };
 

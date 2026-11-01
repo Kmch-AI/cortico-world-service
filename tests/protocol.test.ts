@@ -27,8 +27,9 @@ afterEach(async () => {
 function entry(patch: Partial<ServiceEntry> = {}): ServiceEntry {
   return {
     id: 'svc',
-    kind: 'custom',
-    protocol: 'openai',
+    name: 'svc',
+    type: 'openai',
+    endpoint: 'http://127.0.0.1:8000',
     enabled: true,
     manage: false,
     autoStart: false,
@@ -56,7 +57,7 @@ describe('openai protocol', () => {
     const bytes = wavBytes(0.5);
     const server = await upstream((_req, res) => audio(res, bytes));
     const res = await openaiProtocol.speech(request({
-      entry: entry({ baseUrl: server.url, secretName: 'UPSTREAM_TOKEN' }),
+      entry: entry({ endpoint: server.url, secretName: 'UPSTREAM_TOKEN' }),
       body: { model: 'tts-1', input: 'hi', voice: 'alloy', response_format: 'wav' },
       secret: (name) => (name === 'UPSTREAM_TOKEN' ? 'k-123' : ''),
     }));
@@ -72,10 +73,10 @@ describe('openai protocol', () => {
     expect(res.seconds).toBe(0.5);
   });
 
-  it('baseUrl 已经带 /v1 时不重复拼', async () => {
+  it('endpoint 已经带 /v1 时不重复拼', async () => {
     const server = await upstream((_req, res) => audio(res, wavBytes(0.1)));
     await openaiProtocol.speech(request({
-      entry: entry({ baseUrl: `${server.url}/v1` }),
+      entry: entry({ endpoint: `${server.url}/v1` }),
       body: { input: 'hi' },
     }));
     expect(server.requests[0]?.url).toBe('/v1/audio/speech');
@@ -84,7 +85,7 @@ describe('openai protocol', () => {
   it('上游非音频与错误正文都变成 upstream 错误', async () => {
     const bad = await upstream((_req, res) => json(res, 500, { error: 'boom' }));
     await expect(openaiProtocol.speech(request({
-      entry: entry({ baseUrl: bad.url }),
+      entry: entry({ endpoint: bad.url }),
       body: { input: 'hi' },
     }))).rejects.toMatchObject({
       kind: 'upstream',
@@ -97,7 +98,7 @@ describe('openai protocol', () => {
       res.end('<html>nope</html>');
     });
     await expect(openaiProtocol.speech(request({
-      entry: entry({ baseUrl: html.url }),
+      entry: entry({ endpoint: html.url }),
       body: { input: 'hi' },
     }))).rejects.toBeInstanceOf(ServiceError);
   });
@@ -108,7 +109,7 @@ describe('openai protocol', () => {
       audio(res, wavBytes(0.1));
     });
     await expect(openaiProtocol.speech(request({
-      entry: entry({ baseUrl: slow.url }),
+      entry: entry({ endpoint: slow.url }),
       body: { input: 'hi' },
       timeoutMs: 30,
     }))).rejects.toMatchObject({ kind: 'timeout', status: 504 });
@@ -124,13 +125,13 @@ describe('openai protocol', () => {
       res.end(Buffer.from(bytes));
     });
     const wav = await openaiProtocol.speech(request({
-      entry: entry({ baseUrl: server.url }),
+      entry: entry({ endpoint: server.url }),
       body: { input: 'hi' },
       format: 'wav',
     }));
     expect(wav.mime).toBe('audio/wav');
     const mp3 = await openaiProtocol.speech(request({
-      entry: entry({ baseUrl: server.url }),
+      entry: entry({ endpoint: server.url }),
       body: { input: 'hi' },
       format: 'mp3',
     }));
@@ -145,7 +146,7 @@ describe('openai protocol', () => {
       }, 300).unref();
     });
     await expect(openaiProtocol.speech(request({
-      entry: entry({ baseUrl: slow.url }),
+      entry: entry({ endpoint: slow.url }),
       body: { input: 'hi' },
       timeoutMs: 30,
     }))).rejects.toMatchObject({ kind: 'timeout', status: 504 });
@@ -156,7 +157,7 @@ describe('audiocpp protocol', () => {
   it('speech 原样转交 options', async () => {
     const server = await upstream((_req, res) => audio(res, wavBytes(0.2)));
     await audiocppProtocol.speech(request({
-      entry: entry({ protocol: 'audiocpp', baseUrl: server.url }),
+      entry: entry({ type: 'audiocpp', endpoint: server.url }),
       body: {
         input: 'hi',
         response_format: 'wav',
@@ -175,7 +176,7 @@ describe('audiocpp protocol', () => {
       voices: ['alpha', { id: 'beta', label: 'Beta' }],
     }));
     const voices = await audiocppProtocol.listVoices!({
-      entry: entry({ protocol: 'audiocpp', baseUrl: server.url }),
+      entry: entry({ type: 'audiocpp', endpoint: server.url }),
       model: 'ming3',
       timeoutMs: 5000,
       fetch: (input, init) => fetch(input, init),
@@ -198,8 +199,8 @@ describe('custom protocol', () => {
     }));
     const res = await customProtocol.speech(request({
       entry: entry({
-        protocol: 'custom',
-        baseUrl: `${server.url}/custom/tts`,
+        type: 'custom',
+        endpoint: `${server.url}/custom/tts`,
         secretName: 'UPSTREAM_TOKEN',
         options: {
           method: 'POST',
@@ -228,8 +229,8 @@ describe('custom protocol', () => {
     });
     const res = await customProtocol.speech(request({
       entry: entry({
-        protocol: 'custom',
-        baseUrl: `${server.url}/custom`,
+        type: 'custom',
+        endpoint: `${server.url}/custom`,
         options: { response: 'url', audioPath: 'result.url' },
       }),
       body: { text: 'hi' },
@@ -247,7 +248,7 @@ describe('sing protocol', () => {
       mime: 'audio/wav',
     }));
     const res = await singProtocol.sing!(request({
-      entry: entry({ protocol: 'sing', baseUrl: server.url }),
+      entry: entry({ type: 'sing', endpoint: server.url }),
       body: { lyrics: 'la la', model: 'song-1' },
     }));
     expect(JSON.parse(server.requests[0]!.body)).toEqual({ lyrics: 'la la', model: 'song-1' });
@@ -259,7 +260,7 @@ describe('sing protocol', () => {
     const bytes = wavBytes(0.3);
     const server = await upstream((_req, res) => audio(res, bytes));
     const res = await singProtocol.sing!(request({
-      entry: entry({ protocol: 'sing', baseUrl: server.url }),
+      entry: entry({ type: 'sing', endpoint: server.url }),
       body: { lyrics: 'la' },
     }));
     expect(Buffer.from(res.bytes)).toEqual(Buffer.from(bytes));
@@ -271,7 +272,7 @@ describe('sing protocol', () => {
       audio(res, wavBytes(0.1));
     });
     await expect(singProtocol.sing!(request({
-      entry: entry({ protocol: 'sing', baseUrl: slow.url }),
+      entry: entry({ type: 'sing', endpoint: slow.url }),
       body: { lyrics: 'la' },
       timeoutMs: 30,
     }))).rejects.toMatchObject({ kind: 'timeout', status: 504 });

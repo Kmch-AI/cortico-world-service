@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { SERVICE_DEFAULTS } from '../src/config.ts';
 import type {
-  PanelLogs, PanelModels, PanelState, PanelTokenResult,
+  PanelLogs, PanelModels, PanelServiceEntry, PanelState, PanelTokenResult,
 } from '../src/panel.ts';
 import type { ServiceConfigSection, ServiceEntry } from '../src/types.ts';
 import { ServiceWorld, type ServiceWorldOptions } from '../src/world.ts';
@@ -70,13 +70,12 @@ function make(
 function entry(patch: Partial<ServiceEntry> = {}): ServiceEntry {
   return serviceEntry({
     id: 'alpha',
-    label: 'Alpha',
-    kind: 'custom',
-    protocol: 'openai',
+    name: 'Alpha',
+    type: 'custom',
+    endpoint: 'http://127.0.0.1:9101',
     serverDir: '',
     binary: 'C:/bin/alpha.exe',
     args: '--port 9101',
-    port: 9101,
     options: {},
     ...patch,
   });
@@ -88,14 +87,18 @@ afterEach(async () => {
 });
 
 describe('services 面板', () => {
-  it('声明 services 面板,getMethods 只放只读方法', () => {
+  it('只有一个 services 面板,不再声明配置组', () => {
     const { world } = make({ services: [entry()] });
     const ui = world.webUi('zh');
     expect(ui.panels).toEqual([
       { id: 'services', title: '服务', getMethods: ['state', 'models', 'logs'] },
     ]);
+    expect(ui.config).toBeUndefined();
     expect(typeof ui.invoke).toBe('function');
-    expect(world.webUi('en').panels?.[0]?.title).toBe('Services');
+    const en = world.webUi('en');
+    expect(en.panels).toHaveLength(1);
+    expect(en.panels?.[0]?.title).toBe('Services');
+    expect(en.config).toBeUndefined();
   });
 
   it('state 返回条目与 tokenSet,但从不带密钥值', async () => {
@@ -117,14 +120,90 @@ describe('services 面板', () => {
     expect(json).not.toContain('up-secret-value');
   });
 
-  it('add 把完整数组写回 persist,并更新活配置', async () => {
+  it('面板状态里没有 protocol 与 healthPath：协议与健康路径都由类型推导', async () => {
+    const { world } = make({ services: [entry()] });
+    const state = await world.webUi('zh').invoke!('services', 'state', []) as PanelState;
+    const json = JSON.stringify(state);
+    expect(json).not.toContain('protocol');
+    expect(json).not.toContain('healthPath');
+    expect(state.gateway).not.toHaveProperty('protocol');
+    for (const service of state.services) {
+      expect(service.entry).not.toHaveProperty('protocol');
+      expect(service.entry).not.toHaveProperty('healthPath');
+    }
+  });
+
+  it('saveGateway 校验后写回网关标量', async () => {
+    const { world, cfg, saved } = make({ services: [entry()] });
+    const ui = world.webUi('zh');
+    const state = await ui.invoke!('services', 'saveGateway', [{
+      enabled: false,
+      host: '0.0.0.0',
+      port: 9900,
+      tokenSecret: 'NEW_TOKEN',
+      allowQueryToken: true,
+      requestTimeoutSec: 30,
+      defaultSpeechModel: 'voice-a',
+    }]) as PanelState;
+
+    expect(saved.at(-1)).toEqual({
+      enabled: false,
+      host: '0.0.0.0',
+      port: 9900,
+      tokenSecret: 'NEW_TOKEN',
+      allowQueryToken: true,
+      requestTimeoutSec: 30,
+      defaultSpeechModel: 'voice-a',
+    });
+    expect(cfg.port).toBe(9900);
+    expect(cfg.host).toBe('0.0.0.0');
+    expect(cfg.enabled).toBe(false);
+    expect(cfg.tokenSecret).toBe('NEW_TOKEN');
+    expect(cfg.allowQueryToken).toBe(true);
+    expect(cfg.requestTimeoutSec).toBe(30);
+    expect(cfg.defaultSpeechModel).toBe('voice-a');
+    expect(state.gateway).toMatchObject({
+      enabled: false,
+      host: '0.0.0.0',
+      port: 9900,
+      secretName: 'NEW_TOKEN',
+      allowQueryToken: true,
+      requestTimeoutSec: 30,
+      defaultSpeechModel: 'voice-a',
+    });
+  });
+
+  it('saveGateway 拒绝坏端口、坏超时、坏变量名与未知键,且不写回', async () => {
+    const { world, cfg, saved } = make({ services: [entry()] });
+    const ui = world.webUi('zh');
+    for (const patch of [
+      { port: 0 },
+      { port: 70000 },
+      { port: 1.5 },
+      { port: '9883' },
+      { requestTimeoutSec: 4 },
+      { requestTimeoutSec: 3601 },
+      { tokenSecret: 'not a name' },
+      { nope: 1 },
+      { enabled: 'yes' },
+    ]) {
+      await expect(ui.invoke!('services', 'saveGateway', [patch])).rejects.toThrow();
+    }
+    expect(saved).toEqual([]);
+    expect(cfg.port).toBe(9883);
+    expect(cfg.requestTimeoutSec).toBe(180);
+    expect(cfg.tokenSecret).toBe('');
+    expect(cfg.enabled).toBe(true);
+  });
+
+  it('add 忽略传入 id、返回新条目,并把完整数组写回 persist', async () => {
     const { world, cfg, services } = make({ services: [entry()] });
     const ui = world.webUi('zh');
-    const state = await ui.invoke!('services', 'add', [{
-      id: 'beta',
-      label: 'Beta',
-      kind: 'custom',
-      protocol: 'openai',
+    const created = await ui.invoke!('services', 'add', [{
+      id: 'user-supplied',
+      name: 'Beta',
+      type: 'custom',
+      endpoint: 'http://127.0.0.1:9102',
       enabled: true,
       manage: true,
       autoStart: false,
@@ -132,33 +211,50 @@ describe('services 面板', () => {
       serverDir: '',
       binary: 'C:/bin/beta.exe',
       args: '--port 9102',
-      port: 9102,
-    }]) as PanelState;
+    }]) as PanelServiceEntry;
 
+    expect(created.id).toBe('beta');
+    expect(created.name).toBe('Beta');
+    expect(created.tokenSet).toBe(false);
     expect(services).toHaveLength(1);
     expect(services[0]?.map((item) => item.id)).toEqual(['alpha', 'beta']);
     expect(services[0]?.[1]?.autoStart).toBe(false);
     expect(cfg.services.map((item) => item.id)).toEqual(['alpha', 'beta']);
+    const state = await ui.invoke!('services', 'state', []) as PanelState;
     expect(state.services.map((item) => item.entry.id)).toEqual(['alpha', 'beta']);
   });
 
-  it('重复端口、重复 id、坏 id 与坏端口都拒绝,且不写回', async () => {
-    const { world, cfg, services } = make({ services: [entry()] });
+  it('中文名与重名各自生成不冲突的 id', async () => {
+    const { world, services } = make({ services: [entry()] });
     const ui = world.webUi('zh');
     const base = {
-      kind: 'custom',
-      protocol: 'openai',
+      type: 'custom',
       serverDir: '',
       binary: 'C:/bin/other.exe',
     };
-    await expect(ui.invoke!('services', 'add', [{ ...base, id: 'dup-port', port: 9101 }]))
-      .rejects.toThrow(/port/);
-    await expect(ui.invoke!('services', 'add', [{ ...base, id: 'alpha', port: 9103 }]))
-      .rejects.toThrow(/duplicate service id/);
-    await expect(ui.invoke!('services', 'add', [{ ...base, id: '../evil', port: 9104 }]))
-      .rejects.toThrow(/id must/);
-    await expect(ui.invoke!('services', 'add', [{ ...base, id: 'bad-port', port: 70000 }]))
-      .rejects.toThrow(/port/);
+    await ui.invoke!('services', 'add', [{ ...base, name: '本地语音', endpoint: 'http://127.0.0.1:9102' }]);
+    expect(services.at(-1)?.map((item) => item.id)).toEqual(['alpha', 'custom-1']);
+    await ui.invoke!('services', 'add', [{ ...base, name: 'Alpha', endpoint: 'http://127.0.0.1:9103' }]);
+    expect(services.at(-1)?.map((item) => item.id)).toEqual(['alpha', 'custom-1', 'alpha-2']);
+  });
+
+  it('坏名字、坏端点与坏类型都拒绝,且不写回', async () => {
+    const { world, cfg, services } = make({ services: [entry()] });
+    const ui = world.webUi('zh');
+    const base = {
+      name: 'Other',
+      type: 'custom',
+      serverDir: '',
+      binary: 'C:/bin/other.exe',
+    };
+    await expect(ui.invoke!('services', 'add', [{ ...base, endpoint: 'http://127.0.0.1:9102', name: '' }]))
+      .rejects.toThrow(/name/);
+    await expect(ui.invoke!('services', 'add', [{ ...base, endpoint: '' }]))
+      .rejects.toThrow(/endpoint/);
+    await expect(ui.invoke!('services', 'add', [{ ...base, endpoint: 'ftp://127.0.0.1:9102' }]))
+      .rejects.toThrow(/http/);
+    await expect(ui.invoke!('services', 'add', [{ ...base, type: 'nope', endpoint: 'http://127.0.0.1:9102' }]))
+      .rejects.toThrow(/type must/);
     expect(services).toEqual([]);
     expect(cfg.services.map((item) => item.id)).toEqual(['alpha']);
   });
@@ -166,18 +262,18 @@ describe('services 面板', () => {
   it('update / reorder / remove 都写回完整数组', async () => {
     const second = entry({
       id: 'beta',
-      label: 'Beta',
+      name: 'Beta',
       binary: 'C:/bin/beta.exe',
       args: '--port 9102',
-      port: 9102,
+      endpoint: 'http://127.0.0.1:9102',
     });
     const { world, services } = make({ services: [entry(), second] });
     const ui = world.webUi('zh');
 
-    await ui.invoke!('services', 'update', ['alpha', { label: 'Alpha 2', port: 9104 }]);
+    await ui.invoke!('services', 'update', ['alpha', { name: 'Alpha 2', endpoint: 'http://127.0.0.1:9104' }]);
     expect(services.at(-1)?.map((item) => item.id)).toEqual(['alpha', 'beta']);
-    expect(services.at(-1)?.[0]?.label).toBe('Alpha 2');
-    expect(services.at(-1)?.[0]?.port).toBe(9104);
+    expect(services.at(-1)?.[0]?.name).toBe('Alpha 2');
+    expect(services.at(-1)?.[0]?.endpoint).toBe('http://127.0.0.1:9104');
     await expect(ui.invoke!('services', 'update', ['alpha', { id: 'other' }]))
       .rejects.toThrow(/id cannot/);
 
@@ -190,17 +286,6 @@ describe('services 面板', () => {
     await ui.invoke!('services', 'remove', ['beta']);
     expect(services.at(-1)?.map((item) => item.id)).toEqual(['alpha']);
     await expect(ui.invoke!('services', 'remove', ['beta'])).rejects.toThrow(/unknown service/);
-  });
-
-  it('modelProfiles 覆盖经 update 原样写回,只存覆盖', async () => {
-    const { world, services } = make({ services: [entry()] });
-    const ui = world.webUi('zh');
-    await ui.invoke!('services', 'update', ['alpha', {
-      modelProfiles: { 'audiocpp-ming3': { label: 'Ming custom' } },
-    }]);
-    expect(services.at(-1)?.[0]?.modelProfiles).toEqual({
-      'audiocpp-ming3': { label: 'Ming custom' },
-    });
   });
 
   it('setToken 只回 tokenSet,值不进响应', async () => {
@@ -253,7 +338,12 @@ describe('services 面板', () => {
 
   it('models 与 discover 返回目录快照', async () => {
     const configured = entry({ models: ['voice-a', 'voice-b'] });
-    const remote = entry({ id: 'beta', label: 'Beta', binary: 'C:/bin/beta.exe', port: 9102 });
+    const remote = entry({
+      id: 'beta',
+      name: 'Beta',
+      binary: 'C:/bin/beta.exe',
+      endpoint: 'http://127.0.0.1:9102',
+    });
     const { world } = make({ services: [configured, remote] });
     const ui = world.webUi('zh');
     const models = await ui.invoke!('services', 'models', []) as PanelModels;
