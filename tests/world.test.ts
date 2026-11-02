@@ -109,7 +109,8 @@ describe('service World', () => {
   });
 
   it('默认配置没有服务时不拉起任何进程', async () => {
-    const cfg: ServiceConfigSection = { ...SERVICE_DEFAULTS, enabled: true };
+    // 端口用 0 由内核分配;本机可能已有实例占着默认的 9883。
+    const cfg: ServiceConfigSection = { ...SERVICE_DEFAULTS, enabled: true, port: 0 };
     const world = new ServiceWorld({
       cfg,
       timezone: 'UTC',
@@ -135,7 +136,7 @@ describe('service World', () => {
     const { world } = make({ autoStart: false, options: { ui: true } }, { adopt: true });
     await world.start(new FakeHost());
     const links = world.webUi('zh').links ?? [];
-    expect(links[0]?.href).toBe('http://127.0.0.1:8000');
+    expect(links[0]?.href).toBe('http://127.0.0.1:8080');
   });
 
   it('多个服务按顺序启动,灯与徽标汇总', async () => {

@@ -1,3 +1,8 @@
+## 0.3.0
+
+- audiocpp 默认端口从 8000 改为 8080:类型推导、默认地址、端点占位、示例与测试同步;服务网关仍是 9883,其他 8000 限额与超时不变。
+- 服务面板改版:顶部内部 tab 分为「服务」「网关」;服务页左侧顶部是添加服务按钮、下面是服务列表,右侧是选中服务的编辑区;编辑区按「基本 / 运行 / 进程 / 高级」分组,可展开收起;网关按「基本 / 令牌 / 请求」分组。轮询只更新状态,不重建正在编辑的表单。
+
 ## 0.2.0
 
 - `ServiceEntry` 简化为 `id` / `name` / `type` / `enabled` / `endpoint` / `manage` / `autoStart` / `restartOnExit` 加进程与模型字段;移除 `kind`、`protocol`、`host`、`port`、`baseUrl`、`healthPath`、`configPath`、`label` 与 `modelProfiles`。

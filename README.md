@@ -2,7 +2,7 @@
 
 Kmch AI · 服务:托管本机推理服务，并把它们收在一条 OpenAI 形状的语音接口后面。audiocpp 只是其中一种后端。
 
-0.2.0 有通用进程托管与多条目编排，也有统一网关：`/health`、`/v1/models`、`/v1/audio/voices`、`/v1/audio/speech`、`/v1/audio/sing` 都接在同一组服务条目上。条目只填名称与端点，协议、主机端口与健康路径由类型推导；模型差异用数据 profile 表达，新增模型多数只加配置。
+0.3.0 有通用进程托管与多条目编排，也有统一网关：`/health`、`/v1/models`、`/v1/audio/voices`、`/v1/audio/speech`、`/v1/audio/sing` 都接在同一组服务条目上。条目只填名称与端点，协议、主机端口与健康路径由类型推导；模型差异用数据 profile 表达，新增模型多数只加配置。audiocpp 的默认端口是 8080。
 
 ## 为什么是 World，不是 provider
 
@@ -36,7 +36,7 @@ corepack pnpm add "D:/path/to/cortico-world-service" --ignore-workspace
           "name": "audiocpp",
           "type": "audiocpp",
           "enabled": true,
-          "endpoint": "http://127.0.0.1:8000",
+          "endpoint": "http://127.0.0.1:8080",
           "manage": true,
           "autoStart": true,
           "restartOnExit": true,
@@ -87,7 +87,7 @@ corepack pnpm add "D:/path/to/cortico-world-service" --ignore-workspace
 | `name` | 用户填写的显示名，也是唯一身份；面板与状态事件都用它 |
 | `type` | `audiocpp` / `openai` / `sing` / `llamacpp` / `systemone` / `svc` / `custom`；决定协议与启动预设 |
 | `enabled` | 参与启动与探活 |
-| `endpoint` | 一个 URL，例如 `http://127.0.0.1:8000`、`https://host/v1`；无协议按 http |
+| `endpoint` | 一个 URL，例如 `http://127.0.0.1:8080`、`https://host/v1`；无协议按 http |
 | `manage` | `false` 只探活，不拉起进程；`true` 时没有预设的类型必须给 `binary` |
 | `autoStart` | World 启动时一并拉起 |
 | `restartOnExit` | 非预期退出后按 5s / 15s / 60s 退避重启，最多 3 次 |
@@ -103,7 +103,7 @@ corepack pnpm add "D:/path/to/cortico-world-service" --ignore-workspace
 
 | `type` | 协议 | 默认端口 |
 |---|---|---|
-| `audiocpp` | `audiocpp` | 8000 |
+| `audiocpp` | `audiocpp` | 8080 |
 | `openai` | `openai` | https 443，否则 80 |
 | `sing` | `sing` | 9882 |
 | `svc` | `sing` | 9882 |
@@ -197,6 +197,11 @@ pnpm smoke:host "D:/AI/audio-v0.9.3-bin-windows-x64-cuda13.3" 8018
 ```
 
 `smoke:host` 用真的 `audiocpp_server` 拉起、探活、停止一次，打印三个阶段的 status。
+
+## 版本规则
+
+- 每次发版至少升 patch（第三位）；较大改动升 minor（第二位）。不单独发明 major，除非契约破坏到需要另起包。
+- 0.3.0 按此规则发布：默认端口从 8000 改为 8080、服务面板改版，都算较大改动，升 minor（0.2.0 → 0.3.0）。
 
 ## 许可
 

@@ -38,7 +38,7 @@ export function serviceEntry(patch: Partial<ServiceEntry> = {}): ServiceEntry {
     name: 'audiocpp',
     type: 'audiocpp',
     enabled: true,
-    endpoint: 'http://127.0.0.1:8000',
+    endpoint: 'http://127.0.0.1:8080',
     manage: true,
     autoStart: true,
     restartOnExit: true,

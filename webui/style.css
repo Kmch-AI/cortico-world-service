@@ -1,6 +1,7 @@
 /*
  * 服务面板的专有样式。类名一律 svc- 前缀;颜色与字体只用 WebUI 主题变量,
- * 通用 class(pill / chip / field / sheet / btn / table)一个都不覆盖。
+ * 通用 class(pill / chip / field / sheet / btn / table)一个都不覆盖,
+ * 只在 .svc- 容器内给局部修饰类。
  */
 
 .svc-panel {
@@ -9,24 +10,141 @@
   gap: 10px;
 }
 
-.svc-topbar {
+.svc-panel [hidden] {
+  display: none !important;
+}
+
+.svc-tabbar {
+  display: flex;
   align-items: center;
   gap: 8px;
+  padding: 2px 0;
 }
 
-.svc-picker {
-  flex: 1 1 14rem;
-  min-width: 0;
+.svc-tabs {
+  flex: none;
 }
 
-.svc-detail {
+.svc-view {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  min-width: 0;
 }
 
-.svc-status {
-  margin-bottom: 8px;
+.svc-workbench {
+  display: grid;
+  grid-template-columns: 15rem minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.svc-side {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.svc-side > .btn {
+  width: 100%;
+}
+
+.svc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: min(60vh, 34rem);
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  padding: 1px;
+}
+
+.svc-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: none;
+  color: var(--ink);
+  font: 13px/1.3 var(--sans);
+  text-align: left;
+  cursor: pointer;
+}
+
+.svc-row:hover {
+  background: var(--sheet-2);
+}
+
+.svc-row.active {
+  background: var(--sheet-2);
+  border-color: var(--accent);
+}
+
+.svc-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.svc-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.svc-lamp {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ink-dim);
+}
+
+.svc-lamp.on {
+  background: var(--ok);
+}
+
+.svc-lamp.plain {
+  background: var(--warn);
+}
+
+.svc-lamp.bad {
+  background: var(--danger);
+}
+
+.pill.svc-phase {
+  flex: none;
+  padding: 2px 6px;
+  font-size: 10.5px;
+  line-height: 1.2;
+}
+
+.svc-side .placeholder {
+  padding: 18px 8px;
+}
+
+.svc-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.svc-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.svc-empty .placeholder {
+  width: 100%;
 }
 
 .svc-status table {
@@ -56,6 +174,10 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.svc-formwrap > details.sheet.fold {
+  margin: 0;
 }
 
 .svc-form {
@@ -136,7 +258,6 @@
   align-items: center;
   gap: 5px;
   flex-wrap: wrap;
-  margin-top: 4px;
 }
 
 .pill.svc-bad {
@@ -150,13 +271,18 @@
   gap: 10px;
 }
 
-@container webui-content (max-width: 560px) {
-  .svc-form {
+@container webui-content (max-width: 720px) {
+  .svc-workbench {
     grid-template-columns: 1fr;
   }
 
-  .svc-topbar {
-    align-items: stretch;
-    flex-direction: column;
+  .svc-list {
+    max-height: 15rem;
+  }
+}
+
+@container webui-content (max-width: 560px) {
+  .svc-form {
+    grid-template-columns: 1fr;
   }
 }

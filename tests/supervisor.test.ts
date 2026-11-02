@@ -27,7 +27,7 @@ describe('Supervisor', () => {
 
   it('按 type 预设拉起 audiocpp,参数完整', async () => {
     const { sup, h } = make({
-      endpoint: 'http://127.0.0.1:8000',
+      endpoint: 'http://127.0.0.1:8080',
       options: { backend: 'cuda', device: 1, threads: 4, idleUnloadMs: 60_000, ui: false },
       args: '--parallel-jobs',
     }, { healthFails: 1 });
@@ -40,7 +40,7 @@ describe('Supervisor', () => {
     expect(launch.args).toEqual([
       '--config', 'C:/audiocpp/server.json',
       '--host', '127.0.0.1',
-      '--port', '8000',
+      '--port', '8080',
       '--backend', 'cuda',
       '--device', '1',
       '--threads', '4',
@@ -214,7 +214,7 @@ describe('Supervisor', () => {
     }) as typeof fetch;
     const sup = new Supervisor({ entry: h.entry, dataDir: 'C:/data', log: quietLogger, deps: h.deps });
     await sup.start();
-    expect(seen).toEqual(['http://127.0.0.1:8000/health']);
+    expect(seen).toEqual(['http://127.0.0.1:8080/health']);
     expect(sup.status().phase).toBe('error');
     await sup.stop();
   });

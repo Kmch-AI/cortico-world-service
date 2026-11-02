@@ -41,8 +41,8 @@ describe('endpointUrl', () => {
   });
 
   it('按类型补默认端口', () => {
-    expect(endpointUrl(entry({ type: 'audiocpp', endpoint: '' }))).toBe('http://127.0.0.1:8000');
-    expect(endpointUrl(entry({ type: 'audiocpp', endpoint: 'http://127.0.0.1' }))).toBe('http://127.0.0.1:8000');
+    expect(endpointUrl(entry({ type: 'audiocpp', endpoint: '' }))).toBe('http://127.0.0.1:8080');
+    expect(endpointUrl(entry({ type: 'audiocpp', endpoint: 'http://127.0.0.1' }))).toBe('http://127.0.0.1:8080');
     expect(endpointUrl(entry({ type: 'sing', endpoint: '127.0.0.1' }))).toBe('http://127.0.0.1:9882');
     expect(endpointUrl(entry({ type: 'svc', endpoint: 'http://127.0.0.1' }))).toBe('http://127.0.0.1:9882');
     expect(endpointUrl(entry({ type: 'openai', endpoint: 'https://host' }))).toBe('https://host');
@@ -58,7 +58,7 @@ describe('endpointUrl', () => {
 describe('hostPort', () => {
   it('给启动参数取主机与端口', () => {
     expect(hostPort(entry({ type: 'audiocpp', endpoint: 'http://127.0.0.1' })))
-      .toEqual({ host: '127.0.0.1', port: 8000 });
+      .toEqual({ host: '127.0.0.1', port: 8080 });
     expect(hostPort(entry({ type: 'sing', endpoint: 'http://0.0.0.0:9999' })))
       .toEqual({ host: '0.0.0.0', port: 9999 });
     expect(hostPort(entry({ type: 'openai', endpoint: 'https://api.example.com/v1' })))

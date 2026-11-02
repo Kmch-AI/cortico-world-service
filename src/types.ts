@@ -19,7 +19,7 @@ export interface ServiceEntry {
   name: string;
   type: ServiceType;
   enabled: boolean;
-  /** 一个 URL,例如 `http://127.0.0.1:8000` 或 `https://host/v1`。 */
+  /** 一个 URL,例如 `http://127.0.0.1:8080` 或 `https://host/v1`。 */
   endpoint: string;
   /** false = 只探活,不拉起进程。 */
   manage: boolean;
