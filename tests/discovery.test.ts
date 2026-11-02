@@ -236,8 +236,12 @@ describe('audiocpp server.json + specs metadata', () => {
       voices: ['4016', '7'],
       source: 'api',
     });
-    // Ming 的控制字段由语音语义负责,不再在模型参数面板里重复暴露。
-    expect(ming.parameters).toBeUndefined();
+    // 音色、指令、情绪与语速由语音的模型页负责；这里暴露 Ming 自己的模板与生成参数。
+    expect(ming.parameters?.map((item) => item.name)).toEqual([
+      'template_name', 'language', 'instruction_schema', 'pitch', 'volume', 'max_tokens',
+      'guidance_scale', 'sigma', 'temperature', 'seed', 'raw_text', 'text_chunk_size',
+      'text_chunk_mode', 'trim_silence',
+    ]);
 
     const index = found.models[1]!;
     expect(index).toMatchObject({

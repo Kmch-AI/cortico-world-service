@@ -222,7 +222,8 @@ function specMatches(meta: SpecMeta, model: ModelRecord): boolean {
 
 /**
  * 面板只展示 profile 真正接受的参数;spec 只补说明与默认值。
- * 这样 Ming 的模板字段不会出现在模型页,也不会让语音发出会被服务拒绝的 options。
+ * `ui:false` 留给由语音朗读风格控制的字段,其余 Ming / IndexTTS2 参数照常进入模型页,
+ * 也避免语音发出会被服务拒绝的 options。
  */
 function profileParameters(
   entry: ServiceEntry,

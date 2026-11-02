@@ -248,6 +248,11 @@ describe('service World HTTP gateway', () => {
       }>;
     };
     expect(models.data.map((model) => model.id)).toEqual(['ming3-tts', 'index-tts2']);
+    const ming = models.data.find((model) => model.id === 'ming3-tts')!;
+    expect(ming.parameters?.map((item) => item.name)).toContain('template_name');
+    expect(ming.parameters?.find((item) => item.name === 'pitch')).toMatchObject({
+      type: 'enum', values: ['低', '中', '高'],
+    });
     const index = models.data.find((model) => model.id === 'index-tts2')!;
     expect(index).toMatchObject({
       display_name: 'IndexTTS2',
