@@ -25,6 +25,9 @@
 }
 
 .svc-side {
+  position: sticky;
+  top: 24px;
+  align-self: start;
   display: flex;
   flex-direction: column;
   gap: 0;
@@ -34,6 +37,7 @@
 
 .svc-cards {
   max-height: min(70vh, 46rem);
+  max-height: min(70vh, 46rem, calc(100dvh - 16rem));
 }
 
 .svc-editor {
@@ -218,6 +222,10 @@
   .svc-workbench {
     grid-template-columns: 1fr;
     gap: 18px;
+  }
+
+  .svc-side {
+    position: static;
   }
 
   .svc-cards {

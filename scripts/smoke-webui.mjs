@@ -1,8 +1,8 @@
 /**
  * jsdom mount smoke for dist/webui.js。
  *
- * 只验证结构:两个页面面板、服务卡片、草稿、轮询保留输入、类型切换与编号折叠区。
- * 不碰样式布局(jsdom 不排版),也不连真实数据面;invoke 全部是内存假实现。
+ * 验证结构:两个页面面板、服务卡片、草稿、轮询保留输入、类型切换与编号折叠区;
+ * 另核对左栏吸顶所需的样式合同。jsdom 不排版,真实布局仍要在浏览器里看。
  * 运行前先 `pnpm build:webui`。
  */
 import assert from 'node:assert/strict';
@@ -28,6 +28,18 @@ globalThis.AbortController = window.AbortController;
 const bundle = (await import(new URL('../dist/webui.js', import.meta.url))).default;
 assert.deepEqual(Object.keys(bundle.panels), ['services', 'gateway'], 'bundle exports exactly two panels');
 assert.equal(bundle.config, undefined, 'bundle has no config page');
+
+// 左栏吸顶:服务列表与右侧配置共用一个 .panelslot 滚动端口,左栏必须 sticky,
+// 单列布局再恢复 static。只查构建产物里的声明,不代替真实浏览器排版。
+const css = readFileSync(`${root}dist/webui.css`, 'utf8');
+const sideRule = css.match(/\.svc-side\{[^}]*\}/)?.[0] ?? '';
+assert.match(sideRule, /position:sticky/, 'service side is sticky');
+assert.match(sideRule, /top:24px/, 'service side keeps the panel top gap');
+assert.match(sideRule, /align-self:start/, 'service side stays content-height for sticky');
+const narrow = css.indexOf('@container webui-content (max-width: 760px)');
+const staticSide = css.indexOf('.svc-side{position:static}');
+assert.ok(narrow >= 0 && staticSide > narrow && staticSide - narrow < 300,
+  'single-column layout restores static side');
 
 const document = window.document;
 
