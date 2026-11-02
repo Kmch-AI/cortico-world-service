@@ -167,12 +167,13 @@ describe('service World', () => {
     expect(h.children.every((child) => child.killed)).toBe(true);
   });
 
-  it('不声明配置组:网关标量只在 services 面板里编辑', () => {
+  it('不声明配置组:网关标量只在页面页签里编辑', () => {
     const { world } = make();
     const ui = world.webUi('zh');
     expect(ui.config).toBeUndefined();
     expect(ui.panels).toEqual([
       { id: 'services', title: '服务', getMethods: ['state', 'models', 'logs'] },
+      { id: 'gateway', title: '网关', getMethods: ['state'] },
     ]);
   });
 });

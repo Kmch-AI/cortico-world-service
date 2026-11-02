@@ -1,34 +1,38 @@
 /**
- * 「服务」面板:一个系统页签里的两个视图。
+ * 「服务」与「网关」两块页面面板。框架把 `webUi().panels` 渲染成 Cortico 自己的页面页签,
+ * 所以这里不再做内部分段标签:每一块面板由框架单独挂载、单独卸载。
  *
- * 顶部用分段标签切「服务」与「网关」。服务视图是主从布局:左侧列表,右侧编辑器;
- * 编辑器的字段按「基本 / 运行 / 进程 / 高级」折叠分组。状态每 4 秒刷新,只重画状态灯、
- * 阶段药丸、状态块与动作行;表单只在选中项变化、服务集合变化或保存后重建。
+ * 服务面板复刻模型供应商设置页:左侧是新建按钮与卡片列表,右侧是状态块与无弹层编辑器。
+ * 编辑器的折叠区复用框架 connection-step / connection-section 的编号外观。4 秒轮询只更新
+ * 卡片灯、状态行、状态块与动作,不重建正在编辑的表单。
  * 数据面只走 `ctx.invoke`;DOM 只走 `ctx.ui` 原语。
  */
 import type {
-  WebUiCheckbox, WebUiClientBundle, WebUiPanel, WebUiPanelContext,
+  WebUiCheckbox, WebUiClientBundle, WebUiPanel, WebUiPanelContext, WebUiSheet,
 } from 'cortico/web/shared/client-panel.ts';
 import {
   SERVICE_TYPES,
-  type PanelLogs, type PanelService, type PanelServiceEntry, type PanelState,
+  type PanelGateway, type PanelLogs, type PanelService, type PanelServiceEntry, type PanelState,
   type PanelTokenResult,
 } from '../src/panel.ts';
 import type { ServiceEntry, ServiceType } from '../src/types.ts';
 import { panelText, type PanelText } from './strings.ts';
 import './style.css';
 
-type View = 'services' | 'gateway';
+type Ui = WebUiPanelContext['ui'];
+type Tone = 'on' | 'off' | 'plain';
 
-/** 类型切换且地址为空时的默认地址;其余类型没有可猜的端口。 */
+/** 类型切换时的默认地址;其余类型没有可猜的端口。 */
 const DEFAULT_ENDPOINTS: Partial<Record<ServiceType, string>> = {
   audiocpp: 'http://127.0.0.1:8080',
   sing: 'http://127.0.0.1:9882',
+  svc: 'http://127.0.0.1:9882',
 };
 
-const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+const DRAFT_KEY = '__draft__';
+const POLL_MS = 4000;
 
-type Tone = 'on' | 'off' | 'plain';
+const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 interface PhaseView {
   text: string;
@@ -47,7 +51,11 @@ function servicePhase(T: PanelText, status: PanelService): PhaseView {
   }
 }
 
-function gatewayPhase(T: PanelText, gw: PanelState['gateway']): PhaseView {
+function draftPhase(T: PanelText): PhaseView {
+  return { text: T.draft, tone: 'plain' };
+}
+
+function gatewayPhase(T: PanelText, gw: PanelGateway): PhaseView {
   switch (gw.status) {
     case 'ok': return { text: T.phaseOnline, tone: 'on' };
     case 'starting': return { text: T.phaseStarting, tone: 'plain' };
@@ -69,57 +77,553 @@ function typeNote(T: PanelText, type: ServiceType): string {
   }
 }
 
+function firstModel(value: string | readonly string[] | undefined): string | undefined {
+  if (typeof value === 'string') {
+    return value.split(/[\s,]+/).map((item) => item.trim()).find(Boolean);
+  }
+  return value?.map((item) => item.trim()).find(Boolean);
+}
+
+function lampClass(phase: PhaseView): string {
+  return `svc-lamp ${phase.bad ? 'bad' : phase.tone}`;
+}
+
+function phasePill(ui: Ui, phase: PhaseView): HTMLSpanElement {
+  const pill = ui.pill(phase.text, phase.tone);
+  if (phase.bad) pill.classList.add('svc-bad');
+  return pill;
+}
+
+function fieldBlock(
+  ui: Ui,
+  label: string,
+  control: HTMLElement,
+  note?: string | HTMLElement,
+): HTMLElement {
+  const box = ui.h('div', 'connection-field');
+  box.append(ui.field(label, control));
+  if (note) box.append(typeof note === 'string' ? ui.h('p', 'tdesc', note) : note);
+  return box;
+}
+
+function checkBlock(ui: Ui, box: WebUiCheckbox, note: string): HTMLElement {
+  const wrap = ui.h('div', 'svc-check');
+  wrap.append(box.el, ui.h('p', 'tdesc', note));
+  return wrap;
+}
+
+/**
+ * 编号折叠区。框架的 `.connection-step` 计数器与 summary 编号圆点只认
+ * `details.sheet > summary .connection-step-heading > h3`,这里照供应商编辑页的写法搭出来。
+ */
+function numberedSection(
+  ui: Ui,
+  host: HTMLElement,
+  id: string,
+  title: string,
+  defaultOpen: boolean,
+): WebUiSheet {
+  const card = ui.foldSheet(id, { title, defaultOpen });
+  card.el.classList.add('connection-section');
+  const summary = card.el.querySelector('summary');
+  const heading = summary?.querySelector('h3');
+  if (summary && heading) {
+    const wrap = ui.h('div', 'connection-step-heading');
+    wrap.append(heading);
+    summary.prepend(wrap);
+  }
+  const step = ui.h('div', 'connection-step');
+  step.append(card.el);
+  host.append(step);
+  return card;
+}
+
+function trashIcon(doc: Document): SVGSVGElement {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = doc.createElementNS(NS, 'svg') as SVGSVGElement;
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('width', '18');
+  svg.setAttribute('height', '18');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '2');
+  svg.setAttribute('stroke-linecap', 'round');
+  svg.setAttribute('stroke-linejoin', 'round');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.classList.add('icon');
+  for (const d of ['M3 6h18', 'M8 6V4h8v2', 'M19 6l-1 14H6L5 6', 'M10 11v6M14 11v6']) {
+    const path = doc.createElementNS(NS, 'path');
+    path.setAttribute('d', d);
+    svg.append(path);
+  }
+  return svg;
+}
+
+interface FormSeed {
+  name: string;
+  type: ServiceType;
+  endpoint: string;
+  enabled: boolean;
+  manage: boolean;
+  autoStart: boolean;
+  restartOnExit: boolean;
+  serverDir: string;
+  binary: string;
+  args: string;
+  secretName: string;
+  modelProfile: string;
+  models: string;
+  optionsText: string;
+}
+
+interface RuntimeFields {
+  backend: string;
+  device: string;
+  threads: string;
+  idleUnloadMs: string;
+  ui: boolean;
+}
+
+interface DraftState extends FormSeed, RuntimeFields {}
+
 type ServicePayload = Record<string, unknown>;
 type FormRead = { value: ServicePayload } | { error: string };
+type Selection = { kind: 'draft' } | { kind: 'service'; id: string } | null;
 
 interface ServiceForm {
   el: HTMLElement;
   read(): FormRead;
+  capture(): { seed: FormSeed; runtime: RuntimeFields };
 }
 
-interface ListRow {
-  row: HTMLButtonElement;
+interface FormBuildOptions {
+  mode: 'draft' | 'edit';
+  /** 草稿的运行时字段存回草稿,不重新从 options JSON 推导。 */
+  runtime?: RuntimeFields;
+  onDirty(): void;
+  onChange?(next: { seed: FormSeed; runtime: RuntimeFields }): void;
+  onTest?(): Promise<{ ok: boolean; text: string }>;
+}
+
+interface CardNode {
+  el: HTMLElement;
+  name: HTMLElement;
+  typeValue: HTMLElement;
+  modelValue: HTMLElement;
+  status: HTMLElement;
   lamp: HTMLSpanElement;
-  pill: HTMLSpanElement;
+  statusText: HTMLSpanElement;
+  actions: HTMLElement;
+  actionKey: string;
+}
+
+function selectionKeyOf(selection: Selection): string {
+  if (!selection) return '';
+  return selection.kind === 'draft' ? 'draft' : `service:${selection.id}`;
+}
+
+function newDraft(T: PanelText): DraftState {
+  return {
+    name: T.draftName,
+    type: 'audiocpp',
+    endpoint: DEFAULT_ENDPOINTS.audiocpp!,
+    enabled: false,
+    manage: true,
+    autoStart: false,
+    restartOnExit: false,
+    serverDir: '',
+    binary: '',
+    args: '',
+    secretName: '',
+    modelProfile: '',
+    models: '',
+    optionsText: '',
+    backend: '',
+    device: '',
+    threads: '',
+    idleUnloadMs: '',
+    ui: true,
+  };
+}
+
+function seedOfEntry(entry: ServiceEntry): FormSeed {
+  return {
+    name: entry.name,
+    type: entry.type,
+    endpoint: entry.endpoint,
+    enabled: entry.enabled,
+    manage: entry.manage,
+    autoStart: entry.autoStart,
+    restartOnExit: entry.restartOnExit,
+    serverDir: entry.serverDir ?? '',
+    binary: entry.binary ?? '',
+    args: entry.args ?? '',
+    secretName: entry.secretName ?? '',
+    modelProfile: entry.modelProfile ?? '',
+    models: (entry.models ?? []).join(', '),
+    optionsText: entry.options && Object.keys(entry.options).length
+      ? JSON.stringify(entry.options, null, 2)
+      : '',
+  };
+}
+
+function optionsObject(text: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function runtimeOfOptions(options: Record<string, unknown> | null): RuntimeFields {
+  const numberText = (value: unknown): string =>
+    typeof value === 'number' && Number.isFinite(value) ? String(value) : '';
+  return {
+    backend: typeof options?.backend === 'string' ? options.backend : '',
+    device: numberText(options?.device),
+    threads: numberText(options?.threads),
+    idleUnloadMs: numberText(options?.idleUnloadMs),
+    ui: options?.ui !== false,
+  };
+}
+
+function parseInteger(raw: string): number | null | undefined {
+  const text = raw.trim();
+  if (!text) return undefined;
+  const value = Number(text);
+  return Number.isInteger(value) ? value : null;
+}
+
+function buildServiceForm(
+  ui: Ui,
+  ctx: WebUiPanelContext,
+  T: PanelText,
+  seed: FormSeed,
+  opts: FormBuildOptions,
+): ServiceForm {
+  const prefix = opts.mode === 'draft' ? 'service-draft' : 'service-edit';
+  const runtime = opts.runtime ?? runtimeOfOptions(optionsObject(seed.optionsText));
+
+  const name = ui.input({ value: seed.name });
+  const type = ui.select({ value: seed.type, options: SERVICE_TYPES });
+  const typeNoteEl = ui.h('div', 'tdesc', typeNote(T, seed.type));
+  const endpoint = ui.input({
+    value: seed.endpoint,
+    cls: 'mono',
+    placeholder: 'http://127.0.0.1:8080',
+  });
+
+  const enabled = ui.checkbox(T.flagEnabled, { checked: seed.enabled });
+  const manage = ui.checkbox(T.flagManage, { checked: seed.manage });
+  const autoStart = ui.checkbox(T.flagAutoStart, { checked: seed.autoStart });
+  const restartOnExit = ui.checkbox(T.flagRestartOnExit, { checked: seed.restartOnExit });
+
+  const serverDir = ui.input({ value: seed.serverDir });
+  const binary = ui.input({ value: seed.binary });
+  const args = ui.input({ value: seed.args, cls: 'mono' });
+
+  const backend = ui.select({
+    value: runtime.backend,
+    options: [
+      { value: '', label: T.defaultValue },
+      'cuda', 'cpu', 'vulkan', 'hip', 'metal',
+    ],
+  });
+  const device = ui.input({ type: 'number', value: runtime.device });
+  device.min = '0';
+  device.step = '1';
+  const threads = ui.input({ type: 'number', value: runtime.threads });
+  threads.min = '1';
+  threads.step = '1';
+  const idleUnloadMs = ui.input({ type: 'number', value: runtime.idleUnloadMs });
+  idleUnloadMs.min = '0';
+  idleUnloadMs.step = '1';
+  const uiBox = ui.checkbox(T.flagUi, { checked: runtime.ui });
+
+  const secretName = ui.input({
+    value: seed.secretName,
+    cls: 'mono',
+    placeholder: 'SERVICE_TOKEN',
+  });
+  const modelProfile = ui.input({ value: seed.modelProfile, placeholder: 'auto' });
+  const models = ui.input({ value: seed.models });
+  const optionsArea = ui.textarea({ value: seed.optionsText, rows: 6, cls: 'mono' });
+
+  const pathRow = (input: HTMLInputElement, kind: 'file' | 'directory'): HTMLElement => {
+    const row = ui.h('div', 'svc-path');
+    row.append(input, ui.button(T.choose, {
+      size: 'sm',
+      onClick: () => {
+        void ctx.pickPath({ kind, currentPath: input.value }).then((chosen) => {
+          if (!chosen) return;
+          input.value = chosen;
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+      },
+    }));
+    return row;
+  };
+
+  const identity = ui.sheet({ title: T.sectionIdentity });
+  identity.el.classList.add('connection-identity');
+  identity.body.append(
+    fieldBlock(ui, `${T.fieldName} *`, name, T.nameNote),
+    fieldBlock(ui, `${T.fieldType} *`, type, typeNoteEl),
+  );
+
+  const flow = ui.h('div', 'connection-flow');
+
+  const address = numberedSection(ui, flow, `${prefix}-address`, T.sectionAddress, true);
+  address.body.append(
+    fieldBlock(ui, `${T.fieldEndpoint} *`, endpoint, T.endpointNote),
+    fieldBlock(ui, T.fieldUpstreamToken, secretName, T.upstreamTokenNote),
+  );
+  if (opts.onTest) {
+    const row = ui.rowbar();
+    row.classList.add('connection-test');
+    const line = ui.msgline();
+    const button = ui.button(T.testConnection, {
+      onClick: () => void runTest(),
+    });
+    row.append(button, line);
+    address.body.append(row);
+
+    async function runTest(): Promise<void> {
+      button.disabled = true;
+      line.textContent = '';
+      line.classList.remove('bad');
+      try {
+        const result = await opts.onTest!();
+        if (ctx.signal.aborted) return;
+        line.textContent = result.text;
+        line.classList.toggle('bad', !result.ok);
+      } catch (err) {
+        if (ctx.signal.aborted) return;
+        line.textContent = `${T.testFailed}: ${errText(err)}`;
+        line.classList.add('bad');
+      } finally {
+        button.disabled = false;
+      }
+    }
+  }
+
+  const runtimeSection = numberedSection(ui, flow, `${prefix}-runtime`, T.sectionRuntime, true);
+  const flags = ui.h('div', 'svc-flags');
+  flags.append(
+    checkBlock(ui, enabled, T.serviceEnabledNote),
+    checkBlock(ui, manage, T.manageNote),
+    checkBlock(ui, autoStart, T.autoStartNote),
+    checkBlock(ui, restartOnExit, T.restartOnExitNote),
+  );
+  runtimeSection.body.append(flags);
+
+  const processGroup = ui.h('div', 'svc-process');
+  processGroup.append(
+    fieldBlock(ui, T.fieldServerDir, pathRow(serverDir, 'directory'), T.serverDirNote),
+    fieldBlock(ui, T.fieldBinary, pathRow(binary, 'file'), T.binaryNote),
+    fieldBlock(ui, T.fieldArgs, args, T.argsNote),
+  );
+  runtimeSection.body.append(processGroup);
+
+  const tuningGroup = ui.h('div', 'svc-process');
+  tuningGroup.append(
+    fieldBlock(ui, T.fieldBackend, backend),
+    fieldBlock(ui, T.fieldDevice, device, T.deviceNote),
+    fieldBlock(ui, T.fieldThreads, threads, T.threadsNote),
+  );
+  runtimeSection.body.append(tuningGroup);
+
+  const audiocppGroup = ui.h('div', 'svc-process');
+  audiocppGroup.append(
+    fieldBlock(ui, T.fieldIdleUnloadMs, idleUnloadMs, T.idleUnloadNote),
+    checkBlock(ui, uiBox, T.uiNote),
+  );
+  runtimeSection.body.append(audiocppGroup);
+
+  const modelsSection = numberedSection(ui, flow, `${prefix}-models`, T.sectionModels, true);
+  const profileField = fieldBlock(ui, T.fieldModelProfile, modelProfile, T.modelProfileNote);
+  modelsSection.body.append(
+    profileField,
+    fieldBlock(ui, T.fieldModels, models, T.modelsNote),
+  );
+
+  const advanced = numberedSection(ui, flow, `${prefix}-advanced`, T.advancedTitle, false);
+  advanced.body.append(fieldBlock(ui, T.fieldOptions, optionsArea, T.optionsNote));
+
+  const el = ui.h('div', 'svc-formwrap');
+  el.append(identity.el, flow);
+
+  let lastType = seed.type;
+
+  function syncVisibility(): void {
+    const current = type.value as ServiceType;
+    const managed = manage.checked;
+    processGroup.hidden = !managed;
+    tuningGroup.hidden = !(managed && (current === 'audiocpp' || current === 'llamacpp'));
+    audiocppGroup.hidden = !(managed && current === 'audiocpp');
+    profileField.hidden = current === 'llamacpp';
+  }
+
+  manage.input.addEventListener('change', syncVisibility, { signal: ctx.signal });
+  type.addEventListener('change', () => {
+    const next = type.value as ServiceType;
+    typeNoteEl.textContent = typeNote(T, next);
+    const previousDefault = DEFAULT_ENDPOINTS[lastType];
+    const currentEndpoint = endpoint.value.trim();
+    const nextDefault = DEFAULT_ENDPOINTS[next];
+    if (nextDefault && (!currentEndpoint
+      || (previousDefault !== undefined && currentEndpoint === previousDefault))) {
+      endpoint.value = nextDefault;
+    }
+    if (next === 'openai') manage.setChecked(false);
+    lastType = next;
+    syncVisibility();
+  }, { signal: ctx.signal });
+  syncVisibility();
+
+  function capture(): { seed: FormSeed; runtime: RuntimeFields } {
+    return {
+      seed: {
+        name: name.value.trim(),
+        type: type.value as ServiceType,
+        endpoint: endpoint.value,
+        enabled: enabled.checked,
+        manage: manage.checked,
+        autoStart: autoStart.checked,
+        restartOnExit: restartOnExit.checked,
+        serverDir: serverDir.value,
+        binary: binary.value,
+        args: args.value,
+        secretName: secretName.value,
+        modelProfile: modelProfile.value,
+        models: models.value,
+        optionsText: optionsArea.value,
+      },
+      runtime: {
+        backend: backend.value,
+        device: device.value,
+        threads: threads.value,
+        idleUnloadMs: idleUnloadMs.value,
+        ui: uiBox.checked,
+      },
+    };
+  }
+
+  const changed = (): void => {
+    opts.onDirty();
+    opts.onChange?.(capture());
+  };
+  el.addEventListener('input', changed, { signal: ctx.signal });
+  el.addEventListener('change', changed, { signal: ctx.signal });
+
+  function read(): FormRead {
+    const nameValue = name.value.trim();
+    if (!nameValue) return { error: T.badName };
+    const address = endpoint.value.trim();
+    if (!address) return { error: T.badEndpoint };
+    const typeValue = type.value as ServiceType;
+
+    let options: Record<string, unknown> = {};
+    const optionsText = optionsArea.value.trim();
+    if (optionsText) {
+      const parsed = optionsObject(optionsText);
+      if (!parsed) return { error: T.badOptions };
+      options = { ...parsed };
+    }
+
+    if (manage.checked && (typeValue === 'audiocpp' || typeValue === 'llamacpp')) {
+      const backendValue = backend.value.trim();
+      if (backendValue) options.backend = backendValue;
+      else delete options.backend;
+
+      const deviceValue = parseInteger(device.value);
+      if (deviceValue === null || (deviceValue !== undefined && deviceValue < 0)) {
+        return { error: T.badDevice };
+      }
+      if (deviceValue === undefined) delete options.device;
+      else options.device = deviceValue;
+
+      const threadsValue = parseInteger(threads.value);
+      if (threadsValue === null || (threadsValue !== undefined && threadsValue < 1)) {
+        return { error: T.badThreads };
+      }
+      if (threadsValue === undefined) delete options.threads;
+      else options.threads = threadsValue;
+
+      if (typeValue === 'audiocpp') {
+        const idleValue = parseInteger(idleUnloadMs.value);
+        if (idleValue === null || (idleValue !== undefined && idleValue < 0)) {
+          return { error: T.badIdle };
+        }
+        if (idleValue === undefined) delete options.idleUnloadMs;
+        else options.idleUnloadMs = idleValue;
+        options.ui = uiBox.checked;
+      }
+    }
+
+    const list = models.value.split(/[\s,]+/).map((item) => item.trim()).filter(Boolean);
+    return {
+      value: {
+        name: nameValue,
+        type: typeValue,
+        endpoint: address,
+        enabled: enabled.checked,
+        manage: manage.checked,
+        autoStart: autoStart.checked,
+        restartOnExit: restartOnExit.checked,
+        serverDir: serverDir.value.trim() || null,
+        binary: binary.value.trim() || null,
+        args: args.value.trim() || null,
+        secretName: secretName.value.trim() || null,
+        modelProfile: modelProfile.value.trim() || null,
+        models: list.length ? list : null,
+        options: Object.keys(options).length ? options : null,
+      },
+    };
+  }
+
+  return { el, read, capture };
 }
 
 const servicesPanel: WebUiPanel = {
   mount(ctx: WebUiPanelContext): void {
     const { ui } = ctx;
     const T = panelText(ctx.language);
+    const doc = ctx.root.ownerDocument;
 
     const root = ui.h('div', 'svc-panel');
-    const tabbar = ui.h('div', 'svc-tabbar');
-    const tabs = ui.segmented([
-      { value: 'services', label: T.tabServices },
-      { value: 'gateway', label: T.tabGateway },
-    ], {
-      value: 'services',
-      onSelect: (value) => {
-        const next: View = value === 'gateway' ? 'gateway' : 'services';
-        if (next === view) return;
-        view = next;
-        renderView();
-      },
-    });
-    tabs.el.classList.add('svc-tabs');
-    tabbar.append(tabs.el);
-
     const msg = ui.msgline();
     msg.hidden = true;
-    const viewHost = ui.h('div', 'svc-view');
-    viewHost.append(ui.placeholder(T.loading));
-    root.append(tabbar, msg, viewHost);
+    const layout = ui.h('div', 'svc-workbench');
+    const side = ui.h('aside', 'svc-side');
+    const creator = ui.h('div', 'connection-create');
+    const list = ui.h('div', 'connection-cards svc-cards');
+    const editor = ui.h('div', 'svc-editor');
+    const addButton = ui.button(T.add, {
+      variant: 'primary',
+      onClick: () => openDraft(),
+    });
+    creator.append(addButton, ui.h('p', 'connection-create-hint', T.listNote));
+    side.append(creator, list);
+    layout.append(side, editor);
+    root.append(msg, layout);
     ctx.root.append(root);
 
     let state: PanelState | null = null;
-    let view: View = 'services';
-    let selectedId: string | null = null;
+    let draft: DraftState | null = null;
+    let selection: Selection = null;
     let listKey = '';
-    let detailKey = '';
-    let paintList: (() => void) | null = null;
+    let renderedSelection = '';
     let paintStatus: (() => void) | null = null;
+    let paintDraftStatus: (() => void) | null = null;
     let refreshFailed = false;
+    let refreshing = false;
+    let refreshAgain = false;
+    let pendingSelect: string | null = null;
+    let initialized = false;
+    const cards = new Map<string, CardNode>();
 
     const mono = (text: string): HTMLElement => ui.h('span', 'svc-mono', text);
 
@@ -132,50 +636,558 @@ const servicesPanel: WebUiPanel = {
       return row;
     };
 
-    function setPhasePill(pill: HTMLSpanElement, phase: PhaseView, small = false): void {
-      pill.className = `pill${phase.tone === 'on' ? ' on' : phase.tone === 'off' ? ' off' : ''}`
-        + `${phase.bad ? ' svc-bad' : ''}${small ? ' svc-phase' : ''}`;
-      pill.textContent = phase.text;
+    function fail(err: unknown): void {
+      msg.hidden = false;
+      msg.textContent = `${T.failed}: ${errText(err)}`;
+      msg.classList.add('bad');
     }
 
-    const phasePill = (phase: PhaseView, small = false): HTMLSpanElement => {
-      const pill = ui.pill(phase.text, phase.tone);
-      if (phase.bad) pill.classList.add('svc-bad');
-      if (small) pill.classList.add('svc-phase');
-      return pill;
-    };
+    function clearMsg(): void {
+      msg.hidden = true;
+      msg.textContent = '';
+      msg.classList.remove('bad');
+    }
 
-    const lampClass = (phase: PhaseView): string =>
-      `svc-lamp ${phase.bad ? 'bad' : phase.tone}`;
+    function paintPhase(node: CardNode, phase: PhaseView): void {
+      node.lamp.className = lampClass(phase);
+      node.statusText.textContent = phase.text;
+      node.status.dataset.tone = phase.bad ? 'error'
+        : phase.tone === 'on' ? 'ready'
+          : phase.tone === 'plain' ? 'draft' : '';
+    }
 
-    /** 一格控件 + 下方一句说明。 */
-    const block = (
-      label: string,
-      control: HTMLElement,
-      note: string | HTMLElement,
-      wide = false,
-    ): HTMLElement => {
-      const box = ui.h('div', wide ? 'svc-field svc-wide' : 'svc-field');
-      box.append(ui.field(label, control), typeof note === 'string' ? ui.h('div', 'svc-note', note) : note);
-      return box;
-    };
+    function quickActions(service: PanelService): HTMLElement[] {
+      const id = service.entry.id;
+      const buttons: HTMLElement[] = [];
+      if (service.entry.enabled && service.phase !== 'online' && service.phase !== 'starting') {
+        buttons.push(ui.button(T.start, {
+          size: 'sm',
+          onClick: (event) => { event.stopPropagation(); void act('start', [id]); },
+        }));
+      }
+      if (service.phase === 'online' || service.phase === 'starting') {
+        buttons.push(ui.button(T.stop, {
+          size: 'sm',
+          onClick: (event) => { event.stopPropagation(); void act('stop', [id]); },
+        }));
+      }
+      if (service.entry.enabled) {
+        buttons.push(ui.button(T.restart, {
+          size: 'sm',
+          onClick: (event) => { event.stopPropagation(); void act('restart', [id]); },
+        }));
+      }
+      return buttons;
+    }
 
-    const checkBlock = (box: WebUiCheckbox, note: string): HTMLElement => {
-      const wrap = ui.h('div', 'svc-field');
-      wrap.append(box.el, ui.h('div', 'svc-note', note));
-      return wrap;
-    };
+    function buildCard(identity: string, isDraft: boolean): CardNode {
+      const el = ui.h('article', 'connection-card');
+      el.dataset.service = identity;
+      el.tabIndex = 0;
 
-    const pathRow = (input: HTMLInputElement, kind: 'file' | 'directory'): HTMLElement => {
-      const row = ui.h('div', 'svc-path');
-      row.append(input, ui.button(T.choose, {
-        size: 'sm',
-        onClick: () => {
-          void ctx.pickPath({ kind, currentPath: input.value }).then((chosen) => {
-            if (chosen) input.value = chosen;
-          });
+      const name = ui.h('div', 'connection-name');
+      const facts = ui.h('div', 'connection-facts');
+      const fact = (key: string): HTMLElement => {
+        const box = ui.h('span', `kv kv-${key}`);
+        const value = ui.h('span', 'kv-v');
+        box.append(ui.h('span', 'kv-k', key), value);
+        facts.append(box);
+        return value;
+      };
+      const typeValue = fact(T.cardType);
+      const modelValue = fact(T.cardModel);
+
+      const status = ui.h('div', 'connection-status svc-statusline');
+      const lamp = ui.h('span', 'svc-lamp');
+      const statusText = ui.h('span');
+      status.append(lamp, statusText);
+
+      const actions = ui.h('div', 'svc-card-actions');
+
+      const erase = ui.h('button', 'connection-erase') as HTMLButtonElement;
+      erase.type = 'button';
+      erase.title = isDraft ? T.discard : T.delete;
+      erase.setAttribute('aria-label', erase.title);
+      erase.append(trashIcon(doc));
+      erase.addEventListener('click', (event) => {
+        event.stopPropagation();
+        if (isDraft) discardDraft();
+        else void removeService(identity, name.textContent || identity);
+      }, { signal: ctx.signal });
+
+      el.append(erase, name, facts, status, actions);
+      el.addEventListener('click', (event) => {
+        if ((event.target as Element).closest('button')) return;
+        select(isDraft ? { kind: 'draft' } : { kind: 'service', id: identity });
+      }, { signal: ctx.signal });
+      el.addEventListener('keydown', (event) => {
+        if (event.target !== el) return;
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        select(isDraft ? { kind: 'draft' } : { kind: 'service', id: identity });
+      }, { signal: ctx.signal });
+
+      return { el, name, typeValue, modelValue, status, lamp, statusText, actions, actionKey: '' };
+    }
+
+    function paintList(): void {
+      for (const [identity, node] of cards) {
+        if (identity === DRAFT_KEY) {
+          if (!draft) continue;
+          node.name.textContent = draft.name.trim() || T.draftName;
+          node.typeValue.textContent = draft.type;
+          node.modelValue.textContent = firstModel(draft.models) ?? T.none;
+          paintPhase(node, draftPhase(T));
+          node.actions.replaceChildren();
+          const active = selection?.kind === 'draft';
+          node.el.classList.toggle('is-active', active);
+          node.el.setAttribute('aria-current', active ? 'true' : 'false');
+          continue;
+        }
+
+        const service = state?.services.find((item) => item.entry.id === identity);
+        if (!service) continue;
+        node.name.textContent = service.entry.name;
+        node.typeValue.textContent = service.entry.type;
+        node.modelValue.textContent = service.entry.models?.[0] ?? T.none;
+        paintPhase(node, servicePhase(T, service));
+        const actionKey = `${service.entry.enabled}:${service.phase}`;
+        if (actionKey !== node.actionKey) {
+          node.actionKey = actionKey;
+          node.actions.replaceChildren(...quickActions(service));
+        }
+        const active = selection?.kind === 'service' && selection.id === identity;
+        node.el.classList.toggle('is-active', active);
+        node.el.setAttribute('aria-current', active ? 'true' : 'false');
+      }
+    }
+
+    function renderList(): void {
+      cards.clear();
+      list.replaceChildren();
+      if (!state && !draft) {
+        list.append(ui.placeholder(T.loading));
+        return;
+      }
+      if (draft) {
+        const node = buildCard(DRAFT_KEY, true);
+        cards.set(DRAFT_KEY, node);
+        list.append(node.el);
+      }
+      for (const service of state?.services ?? []) {
+        const node = buildCard(service.entry.id, false);
+        cards.set(service.entry.id, node);
+        list.append(node.el);
+      }
+      if (!draft && (state?.services.length ?? 0) === 0) {
+        list.append(ui.placeholder(T.noServices));
+      }
+    }
+
+    function selectionChanged(): void {
+      if (selectionKeyOf(selection) === renderedSelection) return;
+      renderEditor();
+    }
+
+    function select(next: Selection): void {
+      if (selectionKeyOf(selection) === selectionKeyOf(next)) return;
+      selection = next;
+      paintList();
+      selectionChanged();
+    }
+
+    function openDraft(): void {
+      if (!draft) draft = newDraft(T);
+      selection = { kind: 'draft' };
+      renderList();
+      renderEditor();
+      paintList();
+    }
+
+    function discardDraft(): void {
+      const wasSelected = selection?.kind === 'draft';
+      draft = null;
+      if (wasSelected) selection = null;
+      renderList();
+      if (wasSelected) renderEditor();
+      paintList();
+    }
+
+    // ---- 编辑器 ----
+
+    function renderEditor(): void {
+      paintStatus = null;
+      paintDraftStatus = null;
+      editor.replaceChildren();
+      if (!state && !draft) {
+        editor.append(ui.placeholder(T.loading));
+        renderedSelection = '';
+        return;
+      }
+      if (!selection) {
+        editor.append(ui.placeholder(T.noServiceSelected));
+        renderedSelection = '';
+        return;
+      }
+      if (selection.kind === 'draft') {
+        if (!draft) {
+          selection = null;
+          renderEditor();
+          return;
+        }
+        renderDraftEditor(draft);
+      } else {
+        const id = selection.id;
+        const service = state?.services.find((item) => item.entry.id === id);
+        if (!service) {
+          selection = null;
+          renderEditor();
+          return;
+        }
+        renderServiceEditor(service);
+      }
+      renderedSelection = selectionKeyOf(selection);
+    }
+
+    function renderDraftEditor(current: DraftState): void {
+      const statusHost = ui.h('div', 'svc-status');
+      editor.append(statusHost);
+
+      const paint = (): void => {
+        statusHost.replaceChildren(ui.kv([
+          { k: T.rowStatus, v: phasePill(ui, draftPhase(T)) },
+          { k: T.rowDetail, v: mono(T.draftDetail) },
+          { k: T.rowAddress, v: mono(current.endpoint.trim() || T.none) },
+          { k: T.rowModels, v: mono(firstModel(current.models) ?? T.none) },
+          { k: T.rowPid, v: mono(T.none) },
+          { k: T.rowRestarts, v: mono(T.none) },
+          { k: T.rowToken, v: tokenCell(false, undefined) },
+        ]));
+      };
+      paintDraftStatus = paint;
+      paint();
+
+      const dirtyEl = ui.h('span', 'svc-dirty', T.unsaved);
+      const saveMsg = ui.msgline();
+      saveMsg.hidden = true;
+      const showSaveError = (text: string): void => {
+        saveMsg.hidden = false;
+        saveMsg.textContent = text;
+        saveMsg.classList.add('bad');
+      };
+      const form = buildServiceForm(ui, ctx, T, current, {
+        mode: 'draft',
+        runtime: {
+          backend: current.backend,
+          device: current.device,
+          threads: current.threads,
+          idleUnloadMs: current.idleUnloadMs,
+          ui: current.ui,
         },
+        onDirty: () => { dirtyEl.hidden = false; },
+        onChange: (next) => {
+          Object.assign(current, next.seed, next.runtime);
+          paint();
+          paintList();
+        },
+      });
+
+      const saveButton = ui.button(T.save, {
+        variant: 'primary',
+        onClick: () => void (async () => {
+          const result = form.read();
+          if ('error' in result) {
+            showSaveError(result.error);
+            return;
+          }
+          saveButton.disabled = true;
+          try {
+            const created = await ctx.invoke<PanelServiceEntry>('add', [result.value]);
+            if (ctx.signal.aborted) return;
+            draft = null;
+            pendingSelect = created.id;
+            selection = { kind: 'service', id: created.id };
+            ui.toast(T.saved, 'ok');
+            clearMsg();
+            await refresh(true);
+          } catch (err) {
+            if (ctx.signal.aborted) return;
+            showSaveError(errText(err));
+            saveButton.disabled = false;
+          }
+        })(),
+      });
+
+      const actions = ui.actions();
+      actions.append(dirtyEl, ui.h('span', 'grow'), saveButton);
+      editor.append(form.el, saveMsg, actions);
+    }
+
+    function editorActions(current: PanelService): HTMLElement[] {
+      const order = state?.services.map((item) => item.entry.id) ?? [];
+      const index = order.indexOf(current.entry.id);
+      const id = current.entry.id;
+      const buttons: HTMLElement[] = [];
+      if (current.entry.enabled && current.phase !== 'online' && current.phase !== 'starting') {
+        buttons.push(ui.button(T.start, { size: 'sm', onClick: () => void act('start', [id]) }));
+      }
+      if (current.phase === 'online' || current.phase === 'starting') {
+        buttons.push(ui.button(T.stop, { size: 'sm', onClick: () => void act('stop', [id]) }));
+      }
+      if (current.entry.enabled) {
+        buttons.push(ui.button(T.restart, { size: 'sm', onClick: () => void act('restart', [id]) }));
+      }
+      buttons.push(ui.button(T.probe, { size: 'sm', onClick: () => void act('probe', [id]) }));
+      buttons.push(ui.button(T.logs, {
+        size: 'sm',
+        onClick: () => void openLogs(id, current.entry.name),
       }));
+      if (index > 0) {
+        const up = ui.button('↑', { size: 'sm', onClick: () => void moveService(id, -1) });
+        up.title = T.moveUp;
+        buttons.push(up);
+      }
+      if (index >= 0 && index < order.length - 1) {
+        const down = ui.button('↓', { size: 'sm', onClick: () => void moveService(id, 1) });
+        down.title = T.moveDown;
+        buttons.push(down);
+      }
+      return buttons;
+    }
+
+    function renderServiceEditor(service: PanelService): void {
+      const id = service.entry.id;
+      const statusHost = ui.h('div', 'svc-status');
+      const actionsHost = ui.h('div', 'svc-actions');
+      editor.append(statusHost, actionsHost);
+
+      let actionKey = '';
+      const paint = (): void => {
+        const current = state?.services.find((item) => item.entry.id === id);
+        if (!current) return;
+        statusHost.replaceChildren(ui.kv([
+          { k: T.rowStatus, v: phasePill(ui, servicePhase(T, current)) },
+          { k: T.rowDetail, v: mono(current.detail || T.none) },
+          { k: T.rowAddress, v: mono(current.baseUrl || T.none) },
+          { k: T.rowModels, v: mono(String(current.models)) },
+          { k: T.rowPid, v: mono(current.pid === null ? T.none : String(current.pid)) },
+          { k: T.rowRestarts, v: mono(String(current.restarts)) },
+          { k: T.rowToken, v: tokenCell(current.entry.tokenSet, current.entry.secretName) },
+        ]));
+        const order = state?.services.map((item) => item.entry.id).join(',') ?? '';
+        const nextKey = `${current.entry.enabled}:${current.phase}:${order}`;
+        if (nextKey !== actionKey) {
+          actionKey = nextKey;
+          actionsHost.replaceChildren(...editorActions(current));
+        }
+      };
+      paintStatus = paint;
+      paint();
+
+      const dirtyEl = ui.h('span', 'svc-dirty', T.unsaved);
+      dirtyEl.hidden = true;
+      const saveMsg = ui.msgline();
+      saveMsg.hidden = true;
+      const showSaveError = (text: string): void => {
+        saveMsg.hidden = false;
+        saveMsg.textContent = text;
+        saveMsg.classList.add('bad');
+      };
+      const form = buildServiceForm(ui, ctx, T, seedOfEntry(service.entry), {
+        mode: 'edit',
+        onDirty: () => { dirtyEl.hidden = false; },
+        onTest: async () => {
+          const next = await ctx.invoke<PanelState>('probe', [id]);
+          if (!ctx.signal.aborted) {
+            state = next;
+            paintList();
+            paintStatus?.();
+          }
+          const current = next.services.find((item) => item.entry.id === id);
+          return current?.phase === 'online'
+            ? { ok: true, text: `${T.testOk} · ${current.detail || T.none}` }
+            : { ok: false, text: `${T.testFailed}: ${current?.detail ?? T.none}` };
+        },
+      });
+
+      const saveButton = ui.button(T.save, {
+        variant: 'primary',
+        onClick: () => void (async () => {
+          const result = form.read();
+          if ('error' in result) {
+            showSaveError(result.error);
+            return;
+          }
+          saveButton.disabled = true;
+          try {
+            await ctx.invoke('update', [id, result.value]);
+            if (ctx.signal.aborted) return;
+            ui.toast(T.saved, 'ok');
+            clearMsg();
+            await refresh(true);
+          } catch (err) {
+            if (ctx.signal.aborted) return;
+            showSaveError(errText(err));
+            saveButton.disabled = false;
+          }
+        })(),
+      });
+
+      const actions = ui.actions();
+      actions.append(dirtyEl, ui.h('span', 'grow'), saveButton);
+      editor.append(form.el, saveMsg, actions);
+    }
+
+    // ---- 数据与动作 ----
+
+    async function refresh(force = false): Promise<void> {
+      if (refreshing) {
+        if (force || pendingSelect) refreshAgain = true;
+        return;
+      }
+      refreshing = true;
+      try {
+        const next = await ctx.invoke<PanelState>('state');
+        if (ctx.signal.aborted) return;
+        state = next;
+        if (refreshFailed) {
+          refreshFailed = false;
+          clearMsg();
+        }
+        if (!initialized) {
+          initialized = true;
+          if (!selection && next.services[0]) {
+            selection = { kind: 'service', id: next.services[0].entry.id };
+          }
+          force = true;
+        }
+        if (pendingSelect) {
+          force = true;
+          if (next.services.some((item) => item.entry.id === pendingSelect)) {
+            selection = { kind: 'service', id: pendingSelect };
+            pendingSelect = null;
+          }
+        }
+        const current = selection;
+        if (current?.kind === 'service' && !next.services.some((item) => item.entry.id === current.id)) {
+          selection = null;
+          force = true;
+        }
+        const key = next.services.map((item) => `${item.entry.id}\u0000${item.entry.name}`).join('\u0001');
+        if (force || key !== listKey) {
+          listKey = key;
+          renderList();
+        }
+        if (force || selectionKeyOf(selection) !== renderedSelection) renderEditor();
+        paintList();
+        paintStatus?.();
+      } catch (err) {
+        if (!ctx.signal.aborted) {
+          refreshFailed = true;
+          fail(err);
+        }
+      } finally {
+        refreshing = false;
+        if (refreshAgain) {
+          refreshAgain = false;
+          void refresh(true);
+        }
+      }
+    }
+
+    async function act(method: string, args: unknown[]): Promise<void> {
+      try {
+        await ctx.invoke(method, args);
+        if (ctx.signal.aborted) return;
+        clearMsg();
+        await refresh();
+      } catch (err) {
+        if (!ctx.signal.aborted) fail(err);
+      }
+    }
+
+    async function openLogs(id: string, name: string): Promise<void> {
+      try {
+        const result = await ctx.invoke<PanelLogs>('logs', [id, 200]);
+        if (ctx.signal.aborted) return;
+        ui.drawer(T.logsTitle(name), result.text || T.logsEmpty);
+      } catch (err) {
+        if (!ctx.signal.aborted) fail(err);
+      }
+    }
+
+    async function moveService(id: string, delta: number): Promise<void> {
+      if (!state) return;
+      const ids = state.services.map((item) => item.entry.id);
+      const index = ids.indexOf(id);
+      const target = index + delta;
+      if (index < 0 || target < 0 || target >= ids.length) return;
+      const next = [...ids];
+      const [item] = next.splice(index, 1);
+      next.splice(target, 0, item!);
+      try {
+        await ctx.invoke('reorder', [next]);
+        if (ctx.signal.aborted) return;
+        clearMsg();
+        await refresh();
+      } catch (err) {
+        if (!ctx.signal.aborted) fail(err);
+      }
+    }
+
+    async function removeService(id: string, name: string): Promise<void> {
+      const confirmed = await ui.confirm({
+        title: T.deleteTitle(name),
+        body: T.deleteBody,
+        danger: true,
+      });
+      if (!confirmed || ctx.signal.aborted) return;
+      try {
+        await ctx.invoke('remove', [id]);
+        if (ctx.signal.aborted) return;
+        if (selection?.kind === 'service' && selection.id === id) selection = null;
+        ui.toast(T.deleted, 'ok');
+        clearMsg();
+        await refresh(true);
+      } catch (err) {
+        if (ctx.signal.aborted) return;
+        fail(err);
+      }
+    }
+
+    void refresh(true);
+    ctx.interval(() => void refresh(), POLL_MS);
+  },
+};
+
+const gatewayPanel: WebUiPanel = {
+  mount(ctx: WebUiPanelContext): void {
+    const { ui } = ctx;
+    const T = panelText(ctx.language);
+
+    const root = ui.h('div', 'svc-panel svc-gateway');
+    const msg = ui.msgline();
+    msg.hidden = true;
+    const statusHost = ui.h('div', 'svc-status');
+    const notes = ui.h('div', 'svc-notes');
+    const formHost = ui.h('div', 'svc-formwrap');
+    root.append(msg, statusHost, notes, formHost);
+    ctx.root.append(root);
+
+    let state: PanelState | null = null;
+    let initialized = false;
+    let refreshFailed = false;
+    let refreshing = false;
+    let refreshAgain = false;
+
+    const mono = (text: string): HTMLElement => ui.h('span', 'svc-mono', text);
+
+    const tokenCell = (set: boolean, name: string | undefined): HTMLElement => {
+      const row = ui.h('span', 'svc-chiprow');
+      row.append(
+        ui.pill(set ? T.tokenSetState : T.tokenUnset, set ? 'on' : 'off'),
+        ui.h('span', 'svc-mono', name || T.none),
+      );
       return row;
     };
 
@@ -197,254 +1209,35 @@ const servicesPanel: WebUiPanel = {
       msg.classList.remove('bad');
     }
 
-    // -----------------------------------------------------------------------
-
-    function detailKeyOf(): string {
-      return view === 'gateway' ? 'gateway' : `service:${selectedId ?? ''}`;
+    function paintStatus(): void {
+      if (!state) return;
+      const gw = state.gateway;
+      statusHost.replaceChildren(ui.kv([
+        { k: T.rowStatus, v: phasePill(ui, gatewayPhase(T, gw)) },
+        { k: T.rowReady, v: ui.pill(gw.ready ? T.yes : T.no, gw.ready ? 'on' : 'off') },
+        { k: T.rowAddress, v: mono(gw.baseUrl) },
+        { k: T.rowVersion, v: mono(gw.version) },
+        { k: T.rowUptime, v: mono(ui.fmt.duration(gw.uptimeSec * 1000)) },
+        { k: T.rowServices, v: mono(`${gw.online}/${gw.total}`) },
+        { k: T.rowModels, v: mono(String(gw.models)) },
+        { k: T.rowToken, v: tokenCell(gw.tokenSet, gw.secretName) },
+      ]));
+      notes.replaceChildren(...(gw.restartRequired
+        ? [ui.h('div', 'svc-note', T.restartNeeded)]
+        : []));
     }
 
-    async function refresh(rebuild = false): Promise<void> {
-      try {
-        const next = await ctx.invoke<PanelState>('state');
-        if (ctx.signal.aborted) return;
-        state = next;
-        if (refreshFailed) {
-          refreshFailed = false;
-          clearMsg();
-        }
-        if (selectedId !== null && !state.services.some((item) => item.entry.id === selectedId)) {
-          selectedId = null;
-        }
-        const key = state.services
-          .map((item) => `${item.entry.id}\u0000${item.entry.name}`)
-          .join('\u0001');
-        const setChanged = key !== listKey;
-        listKey = key;
-        if (rebuild || setChanged || detailKey !== detailKeyOf()) renderView();
-        else paintLive();
-      } catch (err) {
-        if (!ctx.signal.aborted) {
-          refreshFailed = true;
-          fail(err);
-        }
-      }
-    }
-
-    /** 轮询时只重画灯、药丸与状态;表单节点原样留着。 */
-    function paintLive(): void {
-      if (paintList) paintList();
-      if (paintStatus) paintStatus();
-    }
-
-    function renderView(): void {
-      paintList = null;
-      paintStatus = null;
-      detailKey = detailKeyOf();
-      viewHost.replaceChildren();
-      if (!state) {
-        viewHost.append(ui.placeholder(T.loading));
-        return;
-      }
-      if (view === 'gateway') renderGateway(viewHost);
-      else renderServices(viewHost);
-      paintLive();
-    }
-
-    // ---- 服务视图 ----
-
-    function renderServices(host: HTMLElement): void {
-      const layout = ui.h('div', 'svc-workbench');
-      const side = ui.h('aside', 'svc-side');
-      const addButton = ui.button(T.add, {
-        variant: 'primary',
-        onClick: () => openAdd(),
-      });
-      const list = ui.h('div', 'svc-list');
-      side.append(addButton, list);
-      const editor = ui.h('div', 'svc-editor');
-      layout.append(side, editor);
-      host.append(layout);
-
-      renderServiceList(list);
-      renderServiceEditor(editor);
-    }
-
-    function renderServiceList(list: HTMLElement): void {
-      const rows = new Map<string, ListRow>();
-      const services = state?.services ?? [];
-      if (services.length === 0) {
-        list.append(ui.placeholder(T.noServices));
-        return;
-      }
-      for (const service of services) {
-        const row = ui.h('button', 'svc-row');
-        row.type = 'button';
-        const lamp = ui.h('span', 'svc-lamp');
-        const name = ui.h('span', 'svc-name', service.entry.name);
-        const pill = phasePill(servicePhase(T, service), true);
-        row.append(lamp, name, pill);
-        row.addEventListener('click', () => selectService(service.entry.id), { signal: ctx.signal });
-        rows.set(service.entry.id, { row, lamp, pill });
-        list.append(row);
-      }
-
-      paintList = (): void => {
-        if (!state) return;
-        for (const service of state.services) {
-          const parts = rows.get(service.entry.id);
-          if (!parts) continue;
-          const phase = servicePhase(T, service);
-          parts.lamp.className = lampClass(phase);
-          setPhasePill(parts.pill, phase, true);
-          const active = service.entry.id === selectedId;
-          parts.row.classList.toggle('active', active);
-          if (active) parts.row.setAttribute('aria-current', 'true');
-          else parts.row.removeAttribute('aria-current');
-        }
-      };
-    }
-
-    function selectService(id: string): void {
-      if (selectedId === id) return;
-      selectedId = id;
-      renderView();
-    }
-
-    function renderNoSelection(editor: HTMLElement): void {
-      const empty = ui.h('div', 'svc-empty');
-      empty.append(
-        ui.placeholder(T.noServiceSelected),
-        ui.button(T.add, {
-          variant: 'primary',
-          onClick: () => openAdd(),
-        }),
-      );
-      editor.append(empty);
-    }
-
-    function renderServiceEditor(editor: HTMLElement): void {
-      const service = selectedId === null
-        ? undefined
-        : state?.services.find((item) => item.entry.id === selectedId);
-      if (!service) {
-        renderNoSelection(editor);
-        return;
-      }
-
-      const id = service.entry.id;
-      const statusHost = ui.h('div', 'svc-status');
-      const actionsHost = ui.h('div', 'svc-actions');
-      editor.append(statusHost, actionsHost);
-
-      const paint = (): void => {
-        if (!state) return;
-        const current = state.services.find((item) => item.entry.id === id);
-        if (!current) return;
-        statusHost.replaceChildren(ui.kv([
-          { k: T.rowStatus, v: phasePill(servicePhase(T, current)) },
-          { k: T.rowDetail, v: mono(current.detail || T.none) },
-          { k: T.rowAddress, v: mono(current.baseUrl || T.none) },
-          { k: T.rowModels, v: mono(String(current.models)) },
-          { k: T.rowPid, v: mono(current.pid === null ? T.none : String(current.pid)) },
-          { k: T.rowRestarts, v: mono(String(current.restarts)) },
-          { k: T.rowToken, v: tokenCell(current.entry.tokenSet, current.entry.secretName) },
-        ]));
-
-        const order = state.services.map((item) => item.entry.id);
-        const index = order.indexOf(id);
-        const buttons: HTMLElement[] = [];
-        if (current.entry.enabled && current.phase !== 'online' && current.phase !== 'starting') {
-          buttons.push(ui.button(T.start, { size: 'sm', onClick: () => void act('start', [id]) }));
-        }
-        if (current.phase === 'online' || current.phase === 'starting') {
-          buttons.push(ui.button(T.stop, { size: 'sm', onClick: () => void act('stop', [id]) }));
-        }
-        if (current.entry.enabled) {
-          buttons.push(ui.button(T.restart, { size: 'sm', onClick: () => void act('restart', [id]) }));
-        }
-        buttons.push(ui.button(T.probe, { size: 'sm', onClick: () => void act('probe', [id]) }));
-        buttons.push(ui.button(T.logs, {
-          size: 'sm',
-          onClick: () => void openLogs(id, current.entry.name),
-        }));
-        if (index > 0) {
-          const up = ui.button('↑', { size: 'sm', onClick: () => void moveService(id, -1) });
-          up.title = T.moveUp;
-          buttons.push(up);
-        }
-        if (index >= 0 && index < order.length - 1) {
-          const down = ui.button('↓', { size: 'sm', onClick: () => void moveService(id, 1) });
-          down.title = T.moveDown;
-          buttons.push(down);
-        }
-        buttons.push(ui.button(T.delete, {
-          variant: 'danger',
-          size: 'sm',
-          onClick: () => void removeService(id, current.entry.name),
-        }));
-        actionsHost.replaceChildren(...buttons);
-      };
-      paintStatus = paint;
-      paint();
-
-      const form = buildServiceForm(service.entry, true, 'edit');
-      const saveRow = ui.actions();
-      saveRow.append(ui.h('span', 'grow'), ui.button(T.save, {
-        variant: 'primary',
-        onClick: () => void (async () => {
-          const result = form.read();
-          if ('error' in result) {
-            fail(result.error);
-            return;
-          }
-          try {
-            await ctx.invoke('update', [id, result.value]);
-            if (ctx.signal.aborted) return;
-            ui.toast(T.saved, 'ok');
-            clearMsg();
-            await refresh(true);
-          } catch (err) {
-            if (!ctx.signal.aborted) fail(err);
-          }
-        })(),
-      }));
-
-      editor.append(form.el, saveRow);
-    }
-
-    // ---- 网关视图 ----
-
-    function renderGateway(host: HTMLElement): void {
-      const statusHost = ui.h('div', 'svc-status');
-      const notes = ui.h('div', 'svc-notes');
-      host.append(statusHost, notes);
-
-      const paint = (): void => {
-        if (!state) return;
-        const gw = state.gateway;
-        statusHost.replaceChildren(ui.kv([
-          { k: T.rowStatus, v: phasePill(gatewayPhase(T, gw)) },
-          { k: T.rowReady, v: ui.pill(gw.ready ? T.yes : T.no, gw.ready ? 'on' : 'off') },
-          { k: T.rowAddress, v: mono(gw.baseUrl) },
-          { k: T.rowVersion, v: mono(gw.version) },
-          { k: T.rowUptime, v: mono(ui.fmt.duration(gw.uptimeSec * 1000)) },
-          { k: T.rowServices, v: mono(`${gw.online}/${gw.total}`) },
-          { k: T.rowModels, v: mono(String(gw.models)) },
-          { k: T.rowToken, v: tokenCell(gw.tokenSet, gw.secretName) },
-        ]));
-        notes.replaceChildren(...(gw.restartRequired ? [ui.h('div', 'svc-note', T.restartNeeded)] : []));
-      };
-      paintStatus = paint;
-      paint();
-
-      const gw = state!.gateway;
+    function buildForm(gw: PanelGateway): void {
       const enabled = ui.checkbox(T.flagEnabled, { checked: gw.enabled });
       const port = ui.input({ type: 'number', value: String(gw.port) });
       port.min = '1';
       port.max = '65535';
       port.step = '1';
       const secretName = ui.input({ value: gw.secretName, cls: 'mono', placeholder: 'SERVICE_TOKEN' });
-      const tokenValue = ui.input({ type: 'password', placeholder: gw.tokenSet ? '••••••••' : T.tokenUnset });
+      const tokenValue = ui.input({
+        type: 'password',
+        placeholder: gw.tokenSet ? '••••••••' : T.tokenUnset,
+      });
       const tokenRow = ui.h('div', 'svc-token-row');
       tokenRow.append(
         tokenValue,
@@ -466,54 +1259,58 @@ const servicesPanel: WebUiPanel = {
       timeout.step = '1';
       const defaultModel = ui.input({ value: gw.defaultSpeechModel, cls: 'mono' });
 
-      const basic = ui.foldSheet('gateway-basic', {
-        title: T.sectionBasic,
-        defaultOpen: true,
-      });
-      const basicGrid = ui.h('div', 'svc-form');
-      basicGrid.append(
-        checkBlock(enabled, T.enabledNote),
-        block(T.fieldPort, port, T.portNote),
-      );
-      basic.body.append(basicGrid);
+      const flow = ui.h('div', 'connection-flow');
 
-      const token = ui.foldSheet('gateway-token', {
-        title: T.sectionToken,
-        defaultOpen: false,
-      });
-      const tokenGrid = ui.h('div', 'svc-form');
-      tokenGrid.append(
-        block(T.fieldTokenName, secretName, T.tokenNameNote),
-        block(T.fieldTokenValue, tokenRow, T.tokenValueNote, true),
-        checkBlock(queryToken, T.allowQueryTokenNote),
+      const basic = numberedSection(ui, flow, 'gateway-basic', T.sectionBasic, true);
+      basic.body.append(
+        checkBlock(ui, enabled, T.enabledNote),
+        fieldBlock(ui, T.fieldPort, port, T.portNote),
       );
-      token.body.append(tokenGrid);
 
-      const request = ui.foldSheet('gateway-request', {
-        title: T.sectionRequest,
-        defaultOpen: false,
-      });
-      const requestGrid = ui.h('div', 'svc-form');
-      requestGrid.append(
-        block(T.fieldTimeout, timeout, T.timeoutNote),
-        block(T.fieldDefaultModel, defaultModel, T.defaultModelNote),
+      const token = numberedSection(ui, flow, 'gateway-token', T.sectionToken, false);
+      token.body.append(
+        fieldBlock(ui, T.fieldTokenName, secretName, T.tokenNameNote),
+        fieldBlock(ui, T.fieldTokenValue, tokenRow, T.tokenValueNote),
+        checkBlock(ui, queryToken, T.allowQueryTokenNote),
       );
-      request.body.append(requestGrid);
 
-      const formWrap = ui.h('div', 'svc-formwrap');
-      formWrap.append(basic.el, token.el, request.el);
+      const request = numberedSection(ui, flow, 'gateway-request', T.sectionRequest, false);
+      request.body.append(
+        fieldBlock(ui, T.fieldTimeout, timeout, T.timeoutNote),
+        fieldBlock(ui, T.fieldDefaultModel, defaultModel, T.defaultModelNote),
+      );
+
+      const dirtyEl = ui.h('span', 'svc-dirty', T.unsaved);
+      dirtyEl.hidden = true;
+      flow.addEventListener('input', () => { dirtyEl.hidden = false; }, { signal: ctx.signal });
+      flow.addEventListener('change', () => { dirtyEl.hidden = false; }, { signal: ctx.signal });
+
+      const saveMsg = ui.msgline();
+      saveMsg.hidden = true;
+      const showSaveError = (text: string): void => {
+        saveMsg.hidden = false;
+        saveMsg.textContent = text;
+        saveMsg.classList.add('bad');
+      };
+
+      const saveButton = ui.button(T.save, { variant: 'primary', onClick: () => void save() });
+      const actions = ui.actions();
+      actions.append(dirtyEl, ui.h('span', 'grow'), saveButton);
+
+      formHost.replaceChildren(flow, saveMsg, actions);
 
       async function save(): Promise<void> {
         const portValue = Number(port.value);
         if (!Number.isInteger(portValue) || portValue < 1 || portValue > 65535) {
-          fail(T.badPort);
+          showSaveError(T.badPort);
           return;
         }
         const timeoutValue = Number(timeout.value);
         if (!Number.isInteger(timeoutValue) || timeoutValue < 5 || timeoutValue > 3600) {
-          fail(T.badTimeout);
+          showSaveError(T.badTimeout);
           return;
         }
+        saveButton.disabled = true;
         try {
           await ctx.invoke('saveGateway', [{
             enabled: enabled.checked,
@@ -528,17 +1325,11 @@ const servicesPanel: WebUiPanel = {
           clearMsg();
           await refresh(true);
         } catch (err) {
-          if (!ctx.signal.aborted) fail(err);
+          if (ctx.signal.aborted) return;
+          showSaveError(errText(err));
+          saveButton.disabled = false;
         }
       }
-
-      const actions = ui.actions();
-      actions.append(ui.h('span', 'grow'), ui.button(T.save, {
-        variant: 'primary',
-        onClick: () => void save(),
-      }));
-
-      host.append(formWrap, actions);
     }
 
     async function setGatewayToken(nameRaw: string, valueInput: HTMLInputElement): Promise<void> {
@@ -553,7 +1344,7 @@ const servicesPanel: WebUiPanel = {
         return;
       }
       try {
-        // 变量名和面板生效值不同时先落盘;setToken 只接受已配置的变量名。
+        // 变量名和当前值不同时先落盘;setToken 只接受已配置的变量名。
         if (state && name !== state.gateway.secretName) {
           await ctx.invoke('saveGateway', [{ tokenSecret: name }]);
         }
@@ -585,267 +1376,45 @@ const servicesPanel: WebUiPanel = {
       }
     }
 
-    // ---- 服务表单 ----
-
-    /**
-     * 服务表单。`withProcess` 为 false 时只给新增用的最小集合:
-     * 名称、类型、地址、四个开关与高级字段;进程字段加完服务再到详情里填。
-     */
-    function buildServiceForm(
-      initial: ServiceEntry | null,
-      withProcess: boolean,
-      mode: 'add' | 'edit',
-    ): ServiceForm {
-      const prefix = mode === 'add' ? 'service-add' : `service-edit-${initial?.id ?? 'new'}`;
-
-      const name = ui.input({ value: initial?.name ?? '' });
-      const type = ui.select({ value: initial?.type ?? 'custom', options: SERVICE_TYPES });
-      const typeNoteEl = ui.h('div', 'svc-note', typeNote(T, type.value as ServiceType));
-      type.addEventListener('change', () => {
-        const value = type.value as ServiceType;
-        typeNoteEl.textContent = typeNote(T, value);
-        const fallback = DEFAULT_ENDPOINTS[value];
-        if (fallback && !endpoint.value.trim()) endpoint.value = fallback;
-      }, { signal: ctx.signal });
-      const endpoint = ui.input({
-        value: initial?.endpoint ?? '',
-        cls: 'mono',
-        placeholder: 'http://127.0.0.1:8080',
-      });
-
-      const enabled = ui.checkbox(T.flagEnabled, { checked: initial?.enabled ?? true });
-      const manage = ui.checkbox(T.flagManage, { checked: initial?.manage ?? true });
-      const autoStart = ui.checkbox(T.flagAutoStart, { checked: initial?.autoStart ?? true });
-      const restartOnExit = ui.checkbox(T.flagRestartOnExit, { checked: initial?.restartOnExit ?? true });
-
-      const basic = ui.foldSheet(`${prefix}-basic`, {
-        title: T.sectionBasic,
-        defaultOpen: true,
-      });
-      const basicGrid = ui.h('div', 'svc-form');
-      basicGrid.append(
-        block(T.fieldName, name, T.nameNote),
-        block(T.fieldType, type, typeNoteEl),
-        block(T.fieldEndpoint, endpoint, T.endpointNote, true),
-      );
-      basic.body.append(basicGrid);
-
-      const runtime = ui.foldSheet(`${prefix}-runtime`, {
-        title: T.sectionRuntime,
-        defaultOpen: true,
-      });
-      const flags = ui.h('div', 'svc-flags');
-      flags.append(
-        checkBlock(enabled, T.serviceEnabledNote),
-        checkBlock(manage, T.manageNote),
-        checkBlock(autoStart, T.autoStartNote),
-        checkBlock(restartOnExit, T.restartOnExitNote),
-      );
-      runtime.body.append(flags);
-
-      const serverDir = ui.input({ value: initial?.serverDir ?? '' });
-      const binary = ui.input({ value: initial?.binary ?? '' });
-      const args = ui.input({ value: initial?.args ?? '', cls: 'mono' });
-      const process = ui.foldSheet(`${prefix}-process`, {
-        title: T.sectionProcess,
-        defaultOpen: manage.checked,
-      });
-      const processGrid = ui.h('div', 'svc-form');
-      processGrid.append(
-        block(T.fieldServerDir, pathRow(serverDir, 'directory'), T.serverDirNote),
-        block(T.fieldBinary, pathRow(binary, 'file'), T.binaryNote),
-        block(T.fieldArgs, args, T.argsNote, true),
-      );
-      process.body.append(processGrid);
-
-      const syncProcess = (): void => {
-        process.el.hidden = !manage.checked;
-        if (manage.checked) (process.el as HTMLDetailsElement).open = true;
-      };
-      manage.input.addEventListener('change', syncProcess, { signal: ctx.signal });
-      syncProcess();
-
-      const secretName = ui.input({
-        value: initial?.secretName ?? '',
-        cls: 'mono',
-        placeholder: 'SERVICE_TOKEN',
-      });
-      const modelProfile = ui.input({ value: initial?.modelProfile ?? '', placeholder: 'auto' });
-      const models = ui.input({ value: initial?.models?.join(', ') ?? '' });
-      const options = ui.textarea({
-        value: initial?.options && Object.keys(initial.options).length
-          ? JSON.stringify(initial.options, null, 2)
-          : '',
-        rows: 5,
-        cls: 'mono',
-      });
-
-      const advanced = ui.foldSheet(`${prefix}-advanced`, {
-        title: T.advancedTitle,
-        defaultOpen: false,
-      });
-      const advancedGrid = ui.h('div', 'svc-form');
-      advancedGrid.append(
-        block(T.fieldTokenName, secretName, T.secretNameNote),
-        block(T.fieldModelProfile, modelProfile, T.modelProfileNote),
-        block(T.fieldModels, models, T.modelsNote),
-        block(T.fieldOptions, options, T.optionsNote, true),
-      );
-      advanced.body.append(advancedGrid);
-
-      const el = ui.h('div', 'svc-formwrap');
-      el.append(basic.el, runtime.el, ...(withProcess ? [process.el] : []), advanced.el);
-
-      function read(): FormRead {
-        const value = name.value.trim();
-        if (!value) return { error: T.badName };
-        const address = endpoint.value.trim();
-        if (!address) return { error: T.badEndpoint };
-        const optionsText = options.value.trim();
-        let parsedOptions: Record<string, unknown> | null = null;
-        if (optionsText) {
-          try {
-            const parsed: unknown = JSON.parse(optionsText);
-            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('object');
-            parsedOptions = parsed as Record<string, unknown>;
-          } catch {
-            return { error: T.badOptions };
-          }
-        }
-        const list = models.value.split(/[\s,]+/).map((item) => item.trim()).filter(Boolean);
-        return {
-          value: {
-            name: value,
-            type: type.value,
-            endpoint: address,
-            enabled: enabled.checked,
-            manage: manage.checked,
-            autoStart: autoStart.checked,
-            restartOnExit: restartOnExit.checked,
-            ...(withProcess ? {
-              serverDir: serverDir.value.trim() || null,
-              binary: binary.value.trim() || null,
-              args: args.value.trim() || null,
-            } : {}),
-            secretName: secretName.value.trim() || null,
-            modelProfile: modelProfile.value.trim() || null,
-            models: list.length ? list : null,
-            options: parsedOptions,
-          },
-        };
+    async function refresh(force = false): Promise<void> {
+      if (refreshing) {
+        if (force) refreshAgain = true;
+        return;
       }
-
-      return { el, read };
-    }
-
-    async function act(method: string, args: unknown[], rebuild = false): Promise<void> {
+      refreshing = true;
       try {
-        await ctx.invoke(method, args);
+        const next = await ctx.invoke<PanelState>('state');
         if (ctx.signal.aborted) return;
-        clearMsg();
-        await refresh(rebuild);
-      } catch (err) {
-        if (!ctx.signal.aborted) fail(err);
-      }
-    }
-
-    async function openLogs(id: string, name: string): Promise<void> {
-      try {
-        const result = await ctx.invoke<PanelLogs>('logs', [id, 200]);
-        if (ctx.signal.aborted) return;
-        ui.drawer(T.logsTitle(name), result.text || T.logsEmpty);
-      } catch (err) {
-        if (!ctx.signal.aborted) fail(err);
-      }
-    }
-
-    async function moveService(id: string, delta: number): Promise<void> {
-      if (!state) return;
-      const ids = state.services.map((item) => item.entry.id);
-      const index = ids.indexOf(id);
-      const target = index + delta;
-      if (index < 0 || target < 0 || target >= ids.length) return;
-      const next = [...ids];
-      const [item] = next.splice(index, 1);
-      next.splice(target, 0, item!);
-      await act('reorder', [next], true);
-    }
-
-    async function removeService(id: string, name: string): Promise<void> {
-      const confirmed = await ui.confirm({
-        title: T.deleteTitle(name),
-        body: T.deleteBody,
-        danger: true,
-      });
-      if (!confirmed || ctx.signal.aborted) return;
-      try {
-        await ctx.invoke('remove', [id]);
-        if (ctx.signal.aborted) return;
-        selectedId = null;
-        ui.toast(T.deleted, 'ok');
-        clearMsg();
-        await refresh(true);
-      } catch (err) {
-        if (!ctx.signal.aborted) fail(err);
-      }
-    }
-
-    // ---- 添加 ----
-
-    function openAdd(): void {
-      const body = ui.h('div', 'svc-add');
-      const form = buildServiceForm(null, false, 'add');
-      const report = ui.msgline();
-      report.hidden = true;
-      const actions = ui.actions();
-      const submit = ui.button(T.add, {
-        variant: 'primary',
-        onClick: () => void save(),
-      });
-      actions.append(ui.h('span', 'grow'), ui.button(T.cancel, {
-        onClick: () => drawer.dispose(),
-      }), submit);
-      body.append(form.el, report, actions);
-      const drawer = ui.drawer(T.addTitle, body);
-
-      async function save(): Promise<void> {
-        const result = form.read();
-        if ('error' in result) {
-          report.hidden = false;
-          report.textContent = result.error;
-          report.classList.add('bad');
-          return;
-        }
-        submit.disabled = true;
-        try {
-          const created = await ctx.invoke<PanelServiceEntry>('add', [result.value]);
-          if (ctx.signal.aborted) return;
-          ui.toast(T.saved, 'ok');
-          drawer.dispose();
-          selectedId = created.id;
-          view = 'services';
-          tabs.setValue('services');
+        state = next;
+        if (refreshFailed) {
+          refreshFailed = false;
           clearMsg();
-          await refresh(true);
-        } catch (err) {
-          if (ctx.signal.aborted) return;
-          report.hidden = false;
-          report.textContent = errText(err);
-          report.classList.add('bad');
-          submit.disabled = false;
+        }
+        const first = !initialized;
+        initialized = true;
+        paintStatus();
+        if (first || force) buildForm(next.gateway);
+      } catch (err) {
+        if (!ctx.signal.aborted) {
+          refreshFailed = true;
+          fail(err);
+        }
+      } finally {
+        refreshing = false;
+        if (refreshAgain) {
+          refreshAgain = false;
+          void refresh(true);
         }
       }
     }
-
-    // -----------------------------------------------------------------------
 
     void refresh(true);
-    ctx.interval(() => void refresh(), 4000);
+    ctx.interval(() => void refresh(), POLL_MS);
   },
 };
 
 const bundle: WebUiClientBundle = {
-  panels: { services: servicesPanel },
+  panels: { services: servicesPanel, gateway: gatewayPanel },
 };
 
 export default bundle;

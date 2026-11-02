@@ -3,7 +3,7 @@ import { pick, type Language, type LanguageTable } from 'cortico/core/language.t
 import type { ServiceConfigSection } from './types.ts';
 
 export const SERVICE_ID = 'service';
-export const SERVICE_VERSION = '0.3.0';
+export const SERVICE_VERSION = '0.4.0';
 
 export const SERVICE_DEFAULTS: ServiceConfigSection = {
   enabled: false,
@@ -20,6 +20,7 @@ const TEXT = {
   zh: {
     label: 'Kmch AI · 服务',
     panelServices: '服务',
+    panelGateway: '网关',
     lampGateway: '网关',
     lampServices: '服务',
     lampModels: '模型',
@@ -27,6 +28,7 @@ const TEXT = {
   en: {
     label: 'Kmch AI · 服务',
     panelServices: 'Services',
+    panelGateway: 'Gateway',
     lampGateway: 'Gateway',
     lampServices: 'Services',
     lampModels: 'Models',

@@ -156,6 +156,7 @@ export class ServiceWorld implements World {
       ],
       panels: [
         { id: 'services', title: t.panelServices, getMethods: ['state', 'models', 'logs'] },
+        { id: 'gateway', title: t.panelGateway, getMethods: ['state'] },
       ],
       invoke: (panel, method, args) => this.invokePanel(panel, method, args),
       links,
@@ -249,12 +250,19 @@ export class ServiceWorld implements World {
   // -------------------------------------------------------------------------
 
   private async invokePanel(panel: string, method: string, args: unknown[]): Promise<unknown> {
+    if (panel === 'gateway') {
+      switch (method) {
+        case 'state': return this.panelState();
+        case 'saveGateway': return this.saveGateway(args[0]);
+        case 'setToken': return this.setToken(args);
+        default: throw new Error(`unknown method: gateway.${method}`);
+      }
+    }
     if (panel !== 'services') throw new Error(`unknown panel: ${panel}`);
     switch (method) {
       case 'state': return this.panelState();
       case 'models': return this.panelModels();
       case 'logs': return this.panelLogs(args);
-      case 'saveGateway': return this.saveGateway(args[0]);
       case 'add': return this.addService(args[0]);
       case 'update': return this.updateService(args[0], args[1]);
       case 'remove': return this.removeService(args[0]);
@@ -264,7 +272,6 @@ export class ServiceWorld implements World {
       case 'restart': return this.controlService('restart', args[0]);
       case 'probe': return this.controlService('probe', args[0]);
       case 'discover': return this.discoverServices(args);
-      case 'setToken': return this.setToken(args);
       default: throw new Error(`unknown method: services.${method}`);
     }
   }

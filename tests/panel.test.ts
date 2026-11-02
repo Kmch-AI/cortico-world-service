@@ -87,18 +87,29 @@ afterEach(async () => {
 });
 
 describe('services 面板', () => {
-  it('只有一个 services 面板,不再声明配置组', () => {
+  it('声明服务与网关两个页面页签,不再声明配置组', () => {
     const { world } = make({ services: [entry()] });
     const ui = world.webUi('zh');
     expect(ui.panels).toEqual([
       { id: 'services', title: '服务', getMethods: ['state', 'models', 'logs'] },
+      { id: 'gateway', title: '网关', getMethods: ['state'] },
     ]);
     expect(ui.config).toBeUndefined();
     expect(typeof ui.invoke).toBe('function');
     const en = world.webUi('en');
-    expect(en.panels).toHaveLength(1);
-    expect(en.panels?.[0]?.title).toBe('Services');
+    expect(en.panels).toHaveLength(2);
+    expect(en.panels?.map((panel) => panel.title)).toEqual(['Services', 'Gateway']);
     expect(en.config).toBeUndefined();
+  });
+
+  it('两个面板只接受各自的方法', async () => {
+    const { world } = make({ services: [entry()] });
+    const ui = world.webUi('zh');
+    expect((await ui.invoke!('gateway', 'state', []) as PanelState).services).toHaveLength(1);
+    await expect(ui.invoke!('services', 'saveGateway', [{}])).rejects.toThrow(/unknown method/);
+    await expect(ui.invoke!('services', 'setToken', ['X', 'y'])).rejects.toThrow(/unknown method/);
+    await expect(ui.invoke!('gateway', 'add', [{}])).rejects.toThrow(/unknown method/);
+    await expect(ui.invoke!('gateway', 'nope', [])).rejects.toThrow(/unknown method/);
   });
 
   it('state 返回条目与 tokenSet,但从不带密钥值', async () => {
@@ -136,7 +147,7 @@ describe('services 面板', () => {
   it('saveGateway 校验后写回网关标量', async () => {
     const { world, cfg, saved } = make({ services: [entry()] });
     const ui = world.webUi('zh');
-    const state = await ui.invoke!('services', 'saveGateway', [{
+    const state = await ui.invoke!('gateway', 'saveGateway', [{
       enabled: false,
       host: '0.0.0.0',
       port: 9900,
@@ -187,7 +198,7 @@ describe('services 面板', () => {
       { nope: 1 },
       { enabled: 'yes' },
     ]) {
-      await expect(ui.invoke!('services', 'saveGateway', [patch])).rejects.toThrow();
+      await expect(ui.invoke!('gateway', 'saveGateway', [patch])).rejects.toThrow();
     }
     expect(saved).toEqual([]);
     expect(cfg.port).toBe(9883);
@@ -222,6 +233,47 @@ describe('services 面板', () => {
     expect(cfg.services.map((item) => item.id)).toEqual(['alpha', 'beta']);
     const state = await ui.invoke!('services', 'state', []) as PanelState;
     expect(state.services.map((item) => item.entry.id)).toEqual(['alpha', 'beta']);
+  });
+
+  it('草稿默认值经 add 生成 audiocpp 条目,并保留 options', async () => {
+    const { world, services, cfg } = make({ services: [entry()] });
+    const ui = world.webUi('zh');
+    const created = await ui.invoke!('services', 'add', [{
+      name: '未命名服务',
+      type: 'audiocpp',
+      endpoint: 'http://127.0.0.1:8080',
+      enabled: false,
+      manage: true,
+      autoStart: false,
+      restartOnExit: false,
+      serverDir: '',
+      binary: '',
+      args: '',
+      secretName: null,
+      modelProfile: null,
+      models: null,
+      options: { backend: 'cuda', device: 0, threads: 4, ui: true, extra: 'kept' },
+    }]) as PanelServiceEntry;
+
+    expect(created.id).toBe('audiocpp-1');
+    expect(created).toMatchObject({
+      name: '未命名服务',
+      type: 'audiocpp',
+      endpoint: 'http://127.0.0.1:8080',
+      enabled: false,
+      manage: true,
+      autoStart: false,
+      restartOnExit: false,
+    });
+    expect(created.options).toEqual({
+      backend: 'cuda', device: 0, threads: 4, ui: true, extra: 'kept',
+    });
+    expect(services.at(-1)?.map((item) => item.id)).toEqual(['alpha', 'audiocpp-1']);
+    const state = await ui.invoke!('services', 'state', []) as PanelState;
+    const saved = state.services.find((item) => item.entry.id === 'audiocpp-1');
+    expect(saved?.phase).toBe('off');
+    expect(saved?.entry.tokenSet).toBe(false);
+    expect(cfg.services.map((item) => item.id)).toEqual(['alpha', 'audiocpp-1']);
   });
 
   it('中文名与重名各自生成不冲突的 id', async () => {
@@ -295,7 +347,7 @@ describe('services 面板', () => {
     }, { secrets: { GATEWAY_TOKEN: 'old', UPSTREAM_TOKEN: 'up' } });
     const ui = world.webUi('zh');
 
-    const result = await ui.invoke!('services', 'setToken', ['GATEWAY_TOKEN', '  fresh-token  ']) as PanelTokenResult;
+    const result = await ui.invoke!('gateway', 'setToken', ['GATEWAY_TOKEN', '  fresh-token  ']) as PanelTokenResult;
     expect(result).toEqual({ tokenSet: true });
     expect(Object.keys(result)).toEqual(['tokenSet']);
     expect(JSON.stringify(result)).not.toContain('fresh-token');
@@ -305,14 +357,14 @@ describe('services 面板', () => {
     const state = await ui.invoke!('services', 'state', []) as PanelState;
     expect(state.gateway.tokenSet).toBe(true);
 
-    const cleared = await ui.invoke!('services', 'setToken', ['GATEWAY_TOKEN', '']) as PanelTokenResult;
+    const cleared = await ui.invoke!('gateway', 'setToken', ['GATEWAY_TOKEN', '']) as PanelTokenResult;
     expect(cleared).toEqual({ tokenSet: false });
     expect(secrets.GATEWAY_TOKEN).toBeUndefined();
     expect((await ui.invoke!('services', 'state', []) as PanelState).gateway.tokenSet).toBe(false);
 
-    await expect(ui.invoke!('services', 'setToken', ['GATEWAY_TOKEN', 'a b']))
+    await expect(ui.invoke!('gateway', 'setToken', ['GATEWAY_TOKEN', 'a b']))
       .rejects.toThrow(/whitespace/);
-    await expect(ui.invoke!('services', 'setToken', ['PATH', 'x']))
+    await expect(ui.invoke!('gateway', 'setToken', ['PATH', 'x']))
       .rejects.toThrow(/unknown token variable/);
     expect(cfg.tokenSecret).toBe('GATEWAY_TOKEN');
   });
@@ -320,7 +372,7 @@ describe('services 面板', () => {
   it('网关变量名未配置时,setToken 采用第一个名字并写回配置', async () => {
     const { world, cfg, saved } = make({ tokenSecret: '', services: [] });
     const ui = world.webUi('zh');
-    const result = await ui.invoke!('services', 'setToken', ['SERVICE_TOKEN', 'secret']) as PanelTokenResult;
+    const result = await ui.invoke!('gateway', 'setToken', ['SERVICE_TOKEN', 'secret']) as PanelTokenResult;
     expect(result).toEqual({ tokenSet: true });
     expect(cfg.tokenSecret).toBe('SERVICE_TOKEN');
     expect(saved.at(-1)).toEqual({ tokenSecret: 'SERVICE_TOKEN' });
