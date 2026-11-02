@@ -186,13 +186,15 @@ export const AUDIOCPP_INDEXTTS2: ModelProfile = {
     {
       name: 'use_emotion_text',
       type: 'bool',
-      description: 'Use text-derived emotion conditioning.',
+      description: '由语音的情绪/表演指令自动置为 true;不在模型参数面板里单独暴露。',
       default: false,
+      ui: false,
     },
     {
       name: 'emotion_text',
       type: 'string',
-      description: 'Emotion description.',
+      description: '由语音的默认情绪、默认表演指令或单句 emotion/instruct 写入;不在模型参数面板里单独暴露。',
+      ui: false,
     },
     {
       name: 'use_random_emotion',

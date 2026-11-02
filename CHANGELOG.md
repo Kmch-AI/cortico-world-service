@@ -1,3 +1,9 @@
+## 0.4.2
+
+- IndexTTS2 的 `use_emotion_text` 与 `emotion_text` 改为由语音语义管理,不再在模型参数面板显示。
+- 请求 options 里遗留的 `use_emotion_text:false` / `emotion_text` 不再覆盖 profile 的 variant;带 `instructions` 或 `emotion` 的请求现在会真正以 `use_emotion_text:true` 和对应文本发给 IndexTTS2。
+- 模型页 IndexTTS2 可见参数从 18 个降到 16 个;`emotion_alpha`、采样与分块参数仍可配置。
+
 ## 0.4.1
 
 - `audiocpp-ming3` 的模型页参数不再全部隐藏：新增模板、语言、指令语言、音高、音量、最大 token、引导强度、噪声尺度、温度、种子、整段发送、文本分块大小/模式与静音修剪；这些参数只在用户填写时进入请求，不改变默认请求体。

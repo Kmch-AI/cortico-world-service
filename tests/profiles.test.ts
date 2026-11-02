@@ -196,8 +196,6 @@ describe('audiocpp IndexTTS2 request mapping', () => {
       options: {
         emotion_alpha: 0.5,
         emotion_vector: '0,0,0,0,0.5,0,0,0',
-        use_emotion_text: false,
-        emotion_text: 'calm',
         use_random_emotion: true,
         interval_silence_ms: 0,
         do_sample: false,
@@ -216,13 +214,22 @@ describe('audiocpp IndexTTS2 request mapping', () => {
     }));
     expect(built.body.options).toMatchObject({
       emotion_alpha: 0.5,
-      use_emotion_text: false,
-      emotion_text: 'calm',
       use_random_emotion: true,
       do_sample: false,
       seed: 42,
       text_chunk_size: 80,
       text_chunk_mode: 'tag_aware',
+    });
+  });
+
+  it('use_emotion_text 与 emotion_text 由语音语义管理,旧 options 不会覆盖', () => {
+    const built = buildSpeech(indexProfile(), speech({
+      instructions: 'speak softly',
+      options: { use_emotion_text: false, emotion_text: 'old' },
+    }));
+    expect(built.body.options).toMatchObject({
+      use_emotion_text: true,
+      emotion_text: 'speak softly',
     });
   });
 
@@ -233,7 +240,7 @@ describe('audiocpp IndexTTS2 request mapping', () => {
       .toThrowError(/>= 1/);
     expect(() => buildSpeech(indexProfile(), speech({ options: { seed: 1.5 } })))
       .toThrowError(/integer/);
-    expect(() => buildSpeech(indexProfile(), speech({ options: { use_emotion_text: 'yes' } })))
+    expect(() => buildSpeech(indexProfile(), speech({ options: { do_sample: 'yes' } })))
       .toThrowError(/boolean/);
     expect(() => buildSpeech(indexProfile(), speech({ options: { text_chunk_mode: 'bogus' } })))
       .toThrowError(/one of/);

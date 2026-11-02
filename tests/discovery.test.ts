@@ -250,7 +250,7 @@ describe('audiocpp server.json + specs metadata', () => {
       voices: ['4016'],
     });
     expect(index.parameters?.map((item) => item.name)).toEqual([
-      'emotion_alpha', 'emotion_vector', 'use_emotion_text', 'emotion_text', 'use_random_emotion',
+      'emotion_alpha', 'emotion_vector', 'use_random_emotion',
       'interval_silence_ms', 'do_sample', 'top_p', 'top_k', 'temperature', 'length_penalty',
       'num_beams', 'repetition_penalty', 'max_tokens', 'duration_scale', 'seed',
       'text_chunk_size', 'text_chunk_mode',

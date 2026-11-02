@@ -259,7 +259,7 @@ describe('service World HTTP gateway', () => {
       tasks: ['tts', 'clone'],
       voices: ['4016'],
     });
-    expect(index.parameters).toHaveLength(18);
+    expect(index.parameters).toHaveLength(16);
     expect(index.parameters?.[0]).toMatchObject({ name: 'emotion_alpha', type: 'float', min: 0, max: 1 });
     expect(index.parameters?.some((item) => item.name === 'text_chunk_mode')).toBe(true);
 

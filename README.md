@@ -2,7 +2,7 @@
 
 Kmch AI · 服务:托管本机推理服务，并把它们收在一条 OpenAI 形状的语音接口后面。audiocpp 只是其中一种后端。
 
-0.4.1 有通用进程托管与多条目编排，也有统一网关：`/health`、`/v1/models`、`/v1/audio/voices`、`/v1/audio/speech`、`/v1/audio/sing` 都接在同一组服务条目上。条目只填名称与端点，协议、主机端口与健康路径由类型推导；模型差异用数据 profile 表达，新增模型多数只加配置。audiocpp 的默认端口是 8080。
+0.4.2 有通用进程托管与多条目编排，也有统一网关：`/health`、`/v1/models`、`/v1/audio/voices`、`/v1/audio/speech`、`/v1/audio/sing` 都接在同一组服务条目上。条目只填名称与端点，协议、主机端口与健康路径由类型推导；模型差异用数据 profile 表达，新增模型多数只加配置。audiocpp 的默认端口是 8080。
 
 ## 为什么是 World，不是 provider
 
@@ -150,7 +150,7 @@ corepack pnpm add "D:/path/to/cortico-world-service" --ignore-workspace
 内置 `openai`、`audiocpp-ming3`、`audiocpp-indextts2`、`custom`、`sing`。解析顺序：条目 `modelProfile` → 模型 id 前缀/通配匹配 → `openai` 兜底（`custom` 类型兜底到 `custom`）。
 
 - `audiocpp-ming3`：有 `instructions` → `options.template_name='freeform'` 并带上指令；否则有 `emotion` → `emotion`；否则有 `speed` → `basic`，按 `speedLevels` 取慢速/中速/快速，pitch 与 volume 为中。模型页额外暴露模板、语言、指令语言、音高、音量、最大 token、引导强度、噪声尺度、温度、种子、整段发送、文本分块与静音修剪；`instruct`、`emotion`、`speed` 仍由语音的朗读风格控制。
-- `audiocpp-indextts2`：`index-tts2` / `index_tts2` / 2.5 走这个 profile；有 `instructions` → `options.use_emotion_text=true` 且 `emotion_text` 取指令，否则有 `emotion` → 同样写入 `emotion_text`。`speed` 不映射到 `duration_scale`。
+- `audiocpp-indextts2`：`index-tts2` / `index_tts2` / 2.5 走这个 profile；有 `instructions` → `options.use_emotion_text=true` 且 `emotion_text` 取指令，否则有 `emotion` → 同样写入 `emotion_text`。`use_emotion_text` 与 `emotion_text` 由语音语义管理，模型页不单独暴露；旧配置里的这两个 options 不会再覆盖 variant。`speed` 不映射到 `duration_scale`。
 - profile 的 `fields` 把语义字段映射到上游 JSON 字段；`variants` 用 `when.has` / `when.not` 选第一个匹配项，`set` 里的 `{{field}}` 用请求值替换；`options` 声明类型、枚举与默认值；`defaults` 是请求体默认字段。
 - 条目 `options` 里只有 profile 声明过的名字会进请求体；启动参数与协议设置不会混进去。
 
@@ -210,6 +210,7 @@ pnpm smoke:host "D:/AI/audio-v0.9.3-bin-windows-x64-cuda13.3" 8018
 ## 版本规则
 
 - 每次发版至少升 patch（第三位）；较大改动升 minor（第二位）。不单独发明 major，除非契约破坏到需要另起包。
+- 0.4.2 按此规则升 patch：IndexTTS2 的 `use_emotion_text` / `emotion_text` 改由语音语义管理，修复旧 options 覆盖。
 - 0.4.1 按此规则升 patch：补齐 Ming 3.0 的模型页参数，不改协议与页面布局。
 - 0.4.0 按此规则发布：服务页改成框架页面页签、复刻供应商设置页布局、新增草稿流程，算较大改动，升 minor（0.3.0 → 0.4.0）。
 - 0.3.0 的默认端口改动仍有效：audiocpp 从 8000 改为 8080；服务网关保持 9883。

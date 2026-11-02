@@ -276,6 +276,8 @@ export function buildSpeech(
   deepMerge(body, variantBody);
 
   const declared = new Set((profile.options ?? []).map((decl) => decl.name));
+  // `ui:false` 的字段由 variant(语音语义)管理;请求或条目里的旧值不能把它覆盖回去。
+  const managed = new Set((profile.options ?? []).filter((decl) => decl.ui === false).map((decl) => decl.name));
   const optionDefaults: Record<string, unknown> = {};
   for (const decl of profile.options ?? []) {
     if (decl.default !== undefined) optionDefaults[decl.name] = decl.default;
@@ -283,11 +285,15 @@ export function buildSpeech(
   // 条目 options 混着进程参数与协议设置(backend、headers、path 等),只取 profile 声明过的名字。
   const serviceOptions: Record<string, unknown> = {};
   for (const [name, value] of Object.entries(entryOptions)) {
-    if (declared.has(name)) serviceOptions[name] = value;
+    if (declared.has(name) && !managed.has(name)) serviceOptions[name] = value;
+  }
+  const requestOptions: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(req.options ?? {})) {
+    if (!managed.has(name)) requestOptions[name] = value;
   }
   const baseOptions = isPlainObject(body.options) ? body.options : {};
   delete body.options;
-  const options = deepMerge({}, baseOptions, optionDefaults, serviceOptions, variantOptions, req.options ?? {});
+  const options = deepMerge({}, baseOptions, optionDefaults, serviceOptions, variantOptions, requestOptions);
   validateOptions(profile, options);
   if (Object.keys(options).length > 0) body.options = options;
 
