@@ -1,6 +1,6 @@
 # @kmchai/cortico-world-service
 
-Kmch AI · 服务:托管本机推理服务，并把它们收在一条 OpenAI 形状的语音接口后面。audiocpp 只是其中一种后端。
+Kmch AI · 服务：本机推理服务的进程托管与统一网关。托管 audiocpp、llama.cpp 与 StartLux，提供语音合成、唱歌、嵌入、重排与 SystemOne 接口；模型、权重与运行环境由你准备。
 
 0.8.0 有通用进程托管与多条目编排，也有统一网关：`/health`、`/v1/models`、`/v1/audio/voices`、`/v1/audio/speech`、`/v1/audio/sing`、`/v1/systemone`、`/v1/embeddings`、`/v1/rerank` 都接在同一组服务条目上。一个条目就是一个模型部署：`tasks` 决定它接 `embeddings` / `rerank`，还是 `systemone`（StartLux）。llama.cpp 条目支持 `llama serve`、`llama-server` 路由与单模型三种启动方式；StartLux 仍由同一条目托管 `llama-server` 与伴生 `startlux-decide`。外部 SystemOne 服务用 `type: systemone`。audiocpp 的默认端口是 8080。
 

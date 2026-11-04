@@ -2,7 +2,7 @@
   "name": "@kmchai/cortico-world-service",
   "version": "0.8.0",
   "type": "module",
-  "description": "Cortico World: host local inference services and expose them through one OpenAI-shaped speech API; audiocpp is only one backend",
+  "description": "Kmch AI · 服务：本机推理服务的进程托管与统一网关。托管 audiocpp、llama.cpp 与 StartLux，提供语音合成、唱歌、嵌入、重排与 SystemOne 接口；模型、权重与运行环境由你准备。",
   "author": "kmchai",
   "license": "MIT",
   "repository": {
@@ -32,11 +32,11 @@
     "locales": {
       "zh": {
         "displayName": "Kmch AI · 服务",
-        "description": "托管本机推理服务,统一暴露 OpenAI 形状的语音接口;audiocpp 只是其中一种后端。"
+        "description": "Kmch AI · 服务：本机推理服务的进程托管与统一网关。托管 audiocpp、llama.cpp 与 StartLux，提供语音合成、唱歌、嵌入、重排与 SystemOne 接口；模型、权重与运行环境由你准备。"
       },
       "en": {
         "displayName": "Kmch AI · Service",
-        "description": "Host local inference services behind one OpenAI-shaped speech API; audiocpp is only one backend."
+        "description": "Kmch AI · Service: process hosting and one gateway for local inference services. Hosts audiocpp, llama.cpp and StartLux; exposes speech synthesis, singing, embeddings, rerank and SystemOne; you provide the models, weights and runtime."
       }
     },
     "tags": [

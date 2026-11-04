@@ -1,5 +1,6 @@
 ## 0.8.0
 
+- 扩展介绍统一为中文的「定位 + 能力 + 边界」格式；npm `description`、市场中文介绍与 README 首段同步；标签保持 `voice`、`local`、`external-setup`、`experimental`。
 - llama.cpp 增加三种启动方式：`serve`（llama.app 的 `llama serve`）、`router`（ggml-org / Cortico 内置的 `llama-server --models-dir`）与 `single`（`-m` 单模型）。`options.launchMode` 显式选择；旧配置按 `args` 推断，空配置默认 `serve`。
 - `serve` 模式默认可执行文件改为 `llama(.exe)`，参数 `serve --host --port --models-dir`，任务按 `--embedding` / `--rerank` 开端点；`router` 保持 `llama-server`，任务按 `--embeddings` / `--reranking`。
 - 新增 `options.modelsDir`、`cacheDir`、`contextSize`、`nGpuLayers`、`parallel`；`cacheDir` 设为 `LLAMA_CACHE`，其余分别映射 `--models-dir`、`-c`、`-ngl`、`--parallel`。非 StartLux 条目现在也会补 `--host` / `--port`，不再依赖操作者在 `args` 里重复。
