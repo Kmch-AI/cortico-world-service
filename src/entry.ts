@@ -9,6 +9,8 @@ const DEFAULT_PORTS: Partial<Record<ServiceType, number>> = {
   audiocpp: 8080,
   sing: 9882,
   svc: 9882,
+  llamacpp: 8081,
+  systemone: 8090,
 };
 const SCHEME_PORTS: Record<string, number> = { 'http:': 80, 'https:': 443 };
 
@@ -43,7 +45,8 @@ function hasScheme(value: string): boolean {
 
 /**
  * 归一化端点:无协议按 http;缺主机用 127.0.0.1;缺端口按类型补
- * (audiocpp 8080、sing/svc 9882、其余按协议)。保留路径,去掉末尾斜杠。
+ * (audiocpp 8080、sing/svc 9882、llamacpp 8081、systemone 8090、其余按协议)。
+ * 保留路径,去掉末尾斜杠。
  */
 export function endpointUrl(entry: EndpointLike): string {
   const raw = (entry.endpoint ?? '').trim();

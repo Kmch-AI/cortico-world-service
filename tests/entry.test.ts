@@ -45,6 +45,10 @@ describe('endpointUrl', () => {
     expect(endpointUrl(entry({ type: 'audiocpp', endpoint: 'http://127.0.0.1' }))).toBe('http://127.0.0.1:8080');
     expect(endpointUrl(entry({ type: 'sing', endpoint: '127.0.0.1' }))).toBe('http://127.0.0.1:9882');
     expect(endpointUrl(entry({ type: 'svc', endpoint: 'http://127.0.0.1' }))).toBe('http://127.0.0.1:9882');
+    expect(endpointUrl(entry({ type: 'systemone', endpoint: 'http://127.0.0.1' })))
+      .toBe('http://127.0.0.1:8090');
+    expect(endpointUrl(entry({ type: 'llamacpp', endpoint: 'http://127.0.0.1' })))
+      .toBe('http://127.0.0.1:8081');
     expect(endpointUrl(entry({ type: 'openai', endpoint: 'https://host' }))).toBe('https://host');
     expect(endpointUrl(entry({ type: 'openai', endpoint: 'http://host' }))).toBe('http://host');
   });
@@ -61,6 +65,10 @@ describe('hostPort', () => {
       .toEqual({ host: '127.0.0.1', port: 8080 });
     expect(hostPort(entry({ type: 'sing', endpoint: 'http://0.0.0.0:9999' })))
       .toEqual({ host: '0.0.0.0', port: 9999 });
+    expect(hostPort(entry({ type: 'systemone', endpoint: 'http://127.0.0.1' })))
+      .toEqual({ host: '127.0.0.1', port: 8090 });
+    expect(hostPort(entry({ type: 'llamacpp', endpoint: 'http://127.0.0.1' })))
+      .toEqual({ host: '127.0.0.1', port: 8081 });
     expect(hostPort(entry({ type: 'openai', endpoint: 'https://api.example.com/v1' })))
       .toEqual({ host: 'api.example.com', port: 443 });
     expect(hostPort(entry({ type: 'openai', endpoint: 'http://api.example.com' })))

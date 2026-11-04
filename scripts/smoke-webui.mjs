@@ -478,15 +478,15 @@ draftType.value = 'openai';
 fire(draftType, 'change');
 const manage = checkControl(draftEditor, '托管进程');
 assert.equal(manage.checked, false, 'openai turns process hosting off');
-assert.deepEqual(all('.svc-process', draftEditor).map(item => item.hidden), [true, true, true], 'unmanaged hides process fields');
+assert.deepEqual(all('.svc-process', draftEditor).map(item => item.hidden), [true, true, true, true], 'unmanaged hides process fields');
 
 manage.checked = true;
 fire(manage, 'change');
-assert.deepEqual(all('.svc-process', draftEditor).map(item => item.hidden), [false, true, true], 'openai shows process fields only');
+assert.deepEqual(all('.svc-process', draftEditor).map(item => item.hidden), [false, true, true, true], 'openai shows process fields only');
 
 draftType.value = 'llamacpp';
 fire(draftType, 'change');
-assert.deepEqual(all('.svc-process', draftEditor).map(item => item.hidden), [false, false, true], 'llamacpp shows tuning, hides audiocpp extras');
+assert.deepEqual(all('.svc-process', draftEditor).map(item => item.hidden), [false, true, false, true], 'llamacpp shows tuning, hides audiocpp extras');
 const profileField = all('.connection-field', draftEditor).find(item => text(item.querySelector('.fieldlabel')).startsWith('模型 profile'));
 assert.ok(profileField?.hidden, 'llamacpp hides the model profile');
 
@@ -550,6 +550,72 @@ await settle();
 assert.equal(confirmCalls, confirmsBeforeDelete + 1, 'deleting a saved service asks first');
 assert.ok(calls.findLast(item => item.method === 'remove'), 'card delete invokes remove');
 assert.equal(all('.connection-card', servicesRoot).length, 2);
+
+// ---------------------------------------------------------------------------
+// systemone 托管:StartLux 本地预设字段、校验与 options 写回。
+// ---------------------------------------------------------------------------
+
+one('.connection-create > .btn', servicesRoot).click();
+await settle();
+const sysEditor = one('.svc-editor', servicesRoot);
+const sysType = fieldControl(sysEditor, '类型');
+const sysEndpoint = fieldControl(sysEditor, '地址');
+sysType.value = 'systemone';
+fire(sysType, 'change');
+assert.equal(sysEndpoint.value, 'http://127.0.0.1:8090', 'systemone default endpoint 8090');
+assert.equal(checkControl(sysEditor, '托管进程').checked, false, 'systemone starts unmanaged');
+const sysGroup = all('.svc-process', sysEditor).find(item => text(item).includes('StartLux 本地预设'));
+assert.ok(sysGroup?.hidden, 'StartLux preset hidden until managed');
+
+const sysManage = checkControl(sysEditor, '托管进程');
+sysManage.checked = true;
+fire(sysManage, 'change');
+assert.equal(sysGroup.hidden, false, 'managed systemone shows the StartLux preset');
+assert.deepEqual(all('.svc-process', sysEditor).map(item => item.hidden), [false, false, true, true], 'systemone shows process and preset only');
+
+const sysModelDir = fieldControl(sysEditor, '模型目录');
+const sysLlamacppUrl = fieldControl(sysEditor, 'llama.cpp 地址');
+const sysThinkMode = fieldControl(sysEditor, '思考模式');
+const sysGate = fieldControl(sysEditor, '思考阈值');
+assert.equal(sysLlamacppUrl.placeholder, 'http://127.0.0.1:8081', 'llamacpp address placeholder');
+assert.deepEqual([...sysThinkMode.options].map(item => item.value), ['', 'auto', 'never', 'always'], 'think mode choices');
+
+const addCountBeforeSystemone = addCount;
+one('.svc-editor .actions .btn.primary', servicesRoot).click();
+await settle();
+assert.equal(addCount, addCountBeforeSystemone, 'missing model directory blocks save');
+assert.match(text(one('.svc-editor > .msgline', servicesRoot)), /模型目录/, 'model directory error shown');
+
+sysModelDir.value = 'D:/models/StartLux-Decision';
+fire(sysModelDir, 'input');
+sysGate.value = '1.5';
+fire(sysGate, 'input');
+one('.svc-editor .actions .btn.primary', servicesRoot).click();
+await settle();
+assert.equal(addCount, addCountBeforeSystemone, 'gate above 1 blocks save');
+assert.match(text(one('.svc-editor > .msgline', servicesRoot)), /0–1/, 'gate error shown');
+
+const sysOptions = fieldControl(sysEditor, 'Options JSON');
+sysOptions.value = JSON.stringify({ extra: 'kept', modelDir: 'old' });
+fire(sysOptions, 'input');
+sysThinkMode.value = 'always';
+fire(sysThinkMode, 'change');
+sysGate.value = '0.7';
+fire(sysGate, 'input');
+one('.svc-editor .actions .btn.primary', servicesRoot).click();
+await settle();
+const sysAdd = calls.findLast(item => item.method === 'add');
+assert.ok(sysAdd, 'systemone draft saves');
+assert.equal(sysAdd.args[0].type, 'systemone');
+assert.equal(sysAdd.args[0].endpoint, 'http://127.0.0.1:8090');
+assert.equal(sysAdd.args[0].manage, true);
+assert.deepEqual(sysAdd.args[0].options, {
+  extra: 'kept',
+  modelDir: 'D:/models/StartLux-Decision',
+  thinkMode: 'always',
+  gate: 0.7,
+});
+console.log(`systemone preset smoke ok: options=${JSON.stringify(sysAdd.args[0].options)}`);
 
 // ---------------------------------------------------------------------------
 // 网关面板:三块编号折叠区。

@@ -58,6 +58,9 @@ const RESTART_DELAYS = [5_000, 15_000, 60_000];
 const HEALTH_TIMEOUT_MS = 3000;
 const DEFAULT_START_TIMEOUT_SEC = 60;
 const DEFAULT_POLL_MS = 5000;
+/** StartLux 预设默认连接的 llama-server 地址。 */
+const DEFAULT_LLAMACPP_URL = 'http://127.0.0.1:8081';
+const THINK_MODES = new Set(['auto', 'never', 'always']);
 const HEALTHY_STATES = new Set(['ok', 'ready', 'healthy', 'up', 'online']);
 
 function splitArgs(raw: string): string[] {
@@ -110,12 +113,16 @@ function defaultBinary(type: ServiceType): string {
   switch (type) {
     case 'audiocpp': return `audiocpp_server${exe}`;
     case 'llamacpp': return `llama-server${exe}`;
+    case 'systemone': return `startlux-decide${exe}`;
     default: return '';
   }
 }
 
 function defaultBackend(entry: ServiceEntry): string {
-  return entry.type === 'audiocpp' ? optionString(entry, 'backend') || 'cuda' : '';
+  if (entry.type === 'audiocpp') return optionString(entry, 'backend') || 'cuda';
+  // StartLux 本地预设固定接 llama.cpp;只用于状态文案,健康接口给了 backend 时以它为准。
+  if (entry.type === 'systemone' && entry.manage) return 'llamacpp';
+  return '';
 }
 
 function looksLikePath(value: string): boolean {
@@ -231,6 +238,10 @@ export class Supervisor {
       this.setPhase('error', `service is not reachable at ${this.baseUrl()}`);
       return;
     }
+    if (this.entry.type === 'systemone' && !optionString(this.entry, 'modelDir')) {
+      this.setPhase('off', 'options.modelDir is required for type systemone');
+      return;
+    }
 
     const resolved = resolveCommand(this.entry);
     if ('error' in resolved) {
@@ -305,8 +316,9 @@ export class Supervisor {
     this.startMonitor();
   }
 
-  /** audiocpp 有启动预设;其余类型只用条目自己的 args。 */
+  /** audiocpp 与 systemone 有启动预设;其余类型只用条目自己的 args。 */
   private launchArgs(): string[] {
+    if (this.entry.type === 'systemone') return this.systemoneArgs();
     if (this.entry.type !== 'audiocpp') return splitArgs(this.entry.args ?? '');
 
     const { host, port } = hostPort(this.entry);
@@ -326,6 +338,30 @@ export class Supervisor {
 
     const configFile = serverJsonPath(this.entry);
     if (configFile && this.deps.exists(configFile)) args.unshift('--config', configFile);
+    return args;
+  }
+
+  /**
+   * StartLux 预设:startlux-decide serve 连另一条 llamacpp 条目拉起的 llama-server。
+   * 参数顺序固定,便于测试与日志核对;条目 args 最后追加。
+   */
+  private systemoneArgs(): string[] {
+    const modelDir = optionString(this.entry, 'modelDir');
+    const llamacppUrl = optionString(this.entry, 'llamacppUrl') || DEFAULT_LLAMACPP_URL;
+    const { host, port } = hostPort(this.entry);
+    const args = [
+      'serve',
+      '--model', modelDir,
+      '--backend', 'llamacpp',
+      '--llamacpp-url', llamacppUrl,
+      '--host', host,
+      '--port', String(port),
+    ];
+    const thinkMode = optionString(this.entry, 'thinkMode');
+    if (THINK_MODES.has(thinkMode)) args.push('--think-mode', thinkMode);
+    const gate = this.entry.options?.gate;
+    if (typeof gate === 'number' && Number.isFinite(gate)) args.push('--gate', String(gate));
+    args.push(...splitArgs(this.entry.args ?? ''));
     return args;
   }
 

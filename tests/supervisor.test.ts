@@ -59,6 +59,125 @@ describe('Supervisor', () => {
     expect(sup.status().detail).toContain('serverDir');
   });
 
+  it('按 StartLux 预设拉起 systemone,参数完整', async () => {
+    const { sup, h } = make({
+      id: 'startlux',
+      name: 'StartLux',
+      type: 'systemone',
+      endpoint: 'http://127.0.0.1:8090',
+      manage: true,
+      serverDir: 'C:/startlux',
+      options: {
+        modelDir: 'D:/models/StartLux-Decision',
+        llamacppUrl: 'http://127.0.0.1:18081',
+        thinkMode: 'always',
+        gate: 0.72,
+      },
+      args: '--extra 1',
+    }, { healthFails: 1 });
+    await sup.start();
+    expect(h.launches).toHaveLength(1);
+    const launch = h.launches[0]!;
+    const exe = process.platform === 'win32' ? 'startlux-decide.exe' : 'startlux-decide';
+    expect(launch.command).toBe(join('C:/startlux', exe));
+    expect(launch.cwd).toBe('C:/startlux');
+    expect(launch.args).toEqual([
+      'serve',
+      '--model', 'D:/models/StartLux-Decision',
+      '--backend', 'llamacpp',
+      '--llamacpp-url', 'http://127.0.0.1:18081',
+      '--host', '127.0.0.1',
+      '--port', '8090',
+      '--think-mode', 'always',
+      '--gate', '0.72',
+      '--extra', '1',
+    ]);
+    expect(sup.status().phase).toBe('online');
+    await sup.stop();
+  });
+
+  it('systemone 预设缺省的可选参数不追加', async () => {
+    const { sup, h } = make({
+      id: 'startlux',
+      name: 'StartLux',
+      type: 'systemone',
+      endpoint: 'http://127.0.0.1:8090',
+      manage: true,
+      serverDir: 'C:/startlux',
+      options: { modelDir: 'D:/models/StartLux-Decision', thinkMode: 'plain', gate: '0.5' },
+    }, { healthFails: 1 });
+    await sup.start();
+    expect(h.launches).toHaveLength(1);
+    expect(h.launches[0]!.args).toEqual([
+      'serve',
+      '--model', 'D:/models/StartLux-Decision',
+      '--backend', 'llamacpp',
+      '--llamacpp-url', 'http://127.0.0.1:8081',
+      '--host', '127.0.0.1',
+      '--port', '8090',
+    ]);
+    await sup.stop();
+  });
+
+  it('systemone 托管缺 options.modelDir 时保持 off,不拉起进程', async () => {
+    const { sup, h } = make({
+      id: 'startlux',
+      name: 'StartLux',
+      type: 'systemone',
+      endpoint: 'http://127.0.0.1:8090',
+      manage: true,
+      serverDir: 'C:/startlux',
+      options: {},
+    }, { healthFails: 1 });
+    await sup.start();
+    expect(h.launches).toEqual([]);
+    expect(sup.status().phase).toBe('off');
+    expect(sup.status().detail).toBe('options.modelDir is required for type systemone');
+  });
+
+  it('外部 systemone 仍只探活,不要求 modelDir', async () => {
+    const { sup, h } = make({
+      id: 'startlux',
+      name: 'StartLux',
+      type: 'systemone',
+      endpoint: 'http://127.0.0.1:8090',
+      manage: false,
+      serverDir: '',
+      options: {},
+    }, { adopt: true });
+    await sup.start();
+    expect(h.launches).toEqual([]);
+    expect(sup.status().phase).toBe('online');
+    expect(sup.status().external).toBe(true);
+    await sup.stop();
+  });
+
+  it('托管 systemone 健康接口不给 backend 时,状态用 llamacpp', async () => {
+    const h = harness({
+      id: 'startlux',
+      name: 'StartLux',
+      type: 'systemone',
+      endpoint: 'http://127.0.0.1:8090',
+      manage: true,
+      serverDir: 'C:/startlux',
+      options: { modelDir: 'D:/models/StartLux-Decision' },
+    });
+    let calls = 0;
+    h.deps.fetch = (async () => {
+      calls += 1;
+      if (calls === 1) return new Response('no', { status: 503 });
+      return new Response(JSON.stringify({ status: 'ok', models: 2 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    const sup = new Supervisor({ entry: h.entry, dataDir: 'C:/data', log: quietLogger, deps: h.deps });
+    await sup.start();
+    expect(sup.status().phase).toBe('online');
+    expect(sup.status().backend).toBe('llamacpp');
+    await sup.stop();
+  });
+
   it('custom 条目不要求 audiocpp 字段,只用 command/args', async () => {
     const binary = process.platform === 'win32' ? 'C:/tools/tts-server.exe' : '/tools/tts-server';
     const { sup, h } = make({

@@ -27,6 +27,8 @@ const DEFAULT_ENDPOINTS: Partial<Record<ServiceType, string>> = {
   audiocpp: 'http://127.0.0.1:8080',
   sing: 'http://127.0.0.1:9882',
   svc: 'http://127.0.0.1:9882',
+  llamacpp: 'http://127.0.0.1:8081',
+  systemone: 'http://127.0.0.1:8090',
 };
 
 const DRAFT_KEY = '__draft__';
@@ -182,6 +184,10 @@ interface RuntimeFields {
   threads: string;
   idleUnloadMs: string;
   ui: boolean;
+  modelDir: string;
+  llamacppUrl: string;
+  thinkMode: string;
+  gate: string;
 }
 
 interface DraftState extends FormSeed, RuntimeFields {}
@@ -243,6 +249,10 @@ function newDraft(T: PanelText): DraftState {
     threads: '',
     idleUnloadMs: '',
     ui: true,
+    modelDir: '',
+    llamacppUrl: '',
+    thinkMode: '',
+    gate: '',
   };
 }
 
@@ -286,6 +296,10 @@ function runtimeOfOptions(options: Record<string, unknown> | null): RuntimeField
     threads: numberText(options?.threads),
     idleUnloadMs: numberText(options?.idleUnloadMs),
     ui: options?.ui !== false,
+    modelDir: typeof options?.modelDir === 'string' ? options.modelDir : '',
+    llamacppUrl: typeof options?.llamacppUrl === 'string' ? options.llamacppUrl : '',
+    thinkMode: typeof options?.thinkMode === 'string' ? options.thinkMode : '',
+    gate: numberText(options?.gate),
   };
 }
 
@@ -341,6 +355,21 @@ function buildServiceForm(
   idleUnloadMs.min = '0';
   idleUnloadMs.step = '1';
   const uiBox = ui.checkbox(T.flagUi, { checked: runtime.ui });
+
+  const modelDir = ui.input({ value: runtime.modelDir, cls: 'mono' });
+  const llamacppUrl = ui.input({
+    value: runtime.llamacppUrl,
+    cls: 'mono',
+    placeholder: 'http://127.0.0.1:8081',
+  });
+  const thinkMode = ui.select({
+    value: runtime.thinkMode,
+    options: [{ value: '', label: T.defaultValue }, 'auto', 'never', 'always'],
+  });
+  const gate = ui.input({ type: 'number', value: runtime.gate });
+  gate.min = '0';
+  gate.max = '1';
+  gate.step = '0.01';
 
   const secretName = ui.input({
     value: seed.secretName,
@@ -427,6 +456,16 @@ function buildServiceForm(
   );
   runtimeSection.body.append(processGroup);
 
+  const systemoneGroup = ui.h('div', 'svc-process');
+  systemoneGroup.append(
+    ui.h('h4', 'svc-group-title', T.systemonePreset),
+    fieldBlock(ui, T.fieldModelDir, pathRow(modelDir, 'directory'), T.modelDirNote),
+    fieldBlock(ui, T.fieldLlamacppUrl, llamacppUrl, T.llamacppUrlNote),
+    fieldBlock(ui, T.fieldThinkMode, thinkMode),
+    fieldBlock(ui, T.fieldGate, gate, T.gateNote),
+  );
+  runtimeSection.body.append(systemoneGroup);
+
   const tuningGroup = ui.h('div', 'svc-process');
   tuningGroup.append(
     fieldBlock(ui, T.fieldBackend, backend),
@@ -461,6 +500,7 @@ function buildServiceForm(
     const current = type.value as ServiceType;
     const managed = manage.checked;
     processGroup.hidden = !managed;
+    systemoneGroup.hidden = !(managed && current === 'systemone');
     tuningGroup.hidden = !(managed && (current === 'audiocpp' || current === 'llamacpp'));
     audiocppGroup.hidden = !(managed && current === 'audiocpp');
     profileField.hidden = current === 'llamacpp';
@@ -507,6 +547,10 @@ function buildServiceForm(
         threads: threads.value,
         idleUnloadMs: idleUnloadMs.value,
         ui: uiBox.checked,
+        modelDir: modelDir.value,
+        llamacppUrl: llamacppUrl.value,
+        thinkMode: thinkMode.value,
+        gate: gate.value,
       },
     };
   }
@@ -531,6 +575,37 @@ function buildServiceForm(
       const parsed = optionsObject(optionsText);
       if (!parsed) return { error: T.badOptions };
       options = { ...parsed };
+    }
+
+    if (manage.checked && typeValue === 'systemone') {
+      const modelDirValue = modelDir.value.trim();
+      if (!modelDirValue) return { error: T.badModelDir };
+      options.modelDir = modelDirValue;
+
+      const llamacppUrlValue = llamacppUrl.value.trim();
+      if (llamacppUrlValue) options.llamacppUrl = llamacppUrlValue;
+      else delete options.llamacppUrl;
+
+      const thinkModeValue = thinkMode.value.trim();
+      if (thinkModeValue) {
+        if (thinkModeValue !== 'auto' && thinkModeValue !== 'never' && thinkModeValue !== 'always') {
+          return { error: T.badThinkMode };
+        }
+        options.thinkMode = thinkModeValue;
+      } else {
+        delete options.thinkMode;
+      }
+
+      const gateText = gate.value.trim();
+      if (gateText) {
+        const gateValue = Number(gateText);
+        if (!Number.isFinite(gateValue) || gateValue < 0 || gateValue > 1) {
+          return { error: T.badGate };
+        }
+        options.gate = gateValue;
+      } else {
+        delete options.gate;
+      }
     }
 
     if (manage.checked && (typeValue === 'audiocpp' || typeValue === 'llamacpp')) {
@@ -883,6 +958,10 @@ const servicesPanel: WebUiPanel = {
           threads: current.threads,
           idleUnloadMs: current.idleUnloadMs,
           ui: current.ui,
+          modelDir: current.modelDir,
+          llamacppUrl: current.llamacppUrl,
+          thinkMode: current.thinkMode,
+          gate: current.gate,
         },
         onDirty: () => { dirtyEl.hidden = false; },
         onChange: (next) => {

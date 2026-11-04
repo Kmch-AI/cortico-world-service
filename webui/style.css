@@ -134,6 +134,13 @@
   flex-direction: column;
 }
 
+.svc-group-title {
+  margin: 6px 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
 .svc-path {
   display: flex;
   align-items: center;

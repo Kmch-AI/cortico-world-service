@@ -1,3 +1,13 @@
+## 0.6.0
+
+- 新增 systemone 的 StartLux 本地启动预设：默认 `startlux-decide`，参数 `serve --model <options.modelDir> --backend llamacpp --llamacpp-url <options.llamacppUrl 或 http://127.0.0.1:8081> --host <endpoint host> --port <endpoint port>`；`options.thinkMode` 为 `auto` / `never` / `always` 时追加 `--think-mode`，`options.gate` 是有限数字时追加 `--gate`，最后追加条目 `args`。
+- 托管 systemone 时 `options.modelDir` 必填；缺失时条目保持 `off` 并给出原因，不拉起进程。外部 systemone（`manage:false`）仍只探活与转发。
+- `DEFAULT_PORTS` 增加 `systemone: 8090` 与 `llamacpp: 8081`；托管 systemone 的健康接口没给 `backend` 时，状态文案用 `llamacpp`。
+- 服务面板在 systemone 托管时显示「StartLux 本地预设」字段组：模型目录、llama.cpp 地址、思考模式与思考阈值；保存时校验模型目录、阈值范围与思考模式枚举，写回 `options` 并保留其他键；草稿切换不丢这些值。
+- README 补 StartLux 本地部署要点：GGUF 转换、`llama-server` 建议参数、Instant 模型限制与启动超时。
+- 新增 5 个测试（systemone 预设参数、缺省参数、缺 modelDir、外部 systemone、backend 文案），服务包 11 个文件 163 个测试全绿；typecheck、build:webui、smoke:webui、check:extension 通过。
+- 版本按新增启动预设升 minor。
+
 ## 0.5.0
 
 - 新增三条 JSON 网关路由：`POST /v1/systemone`（TypeSafe Jev wire format，原样转发到 `systemone` 条目）、`POST /v1/embeddings` 与 `POST /v1/rerank`（转发到 `llamacpp` 条目）。
