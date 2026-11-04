@@ -16,7 +16,7 @@ import {
   type PanelTokenResult,
 } from '../src/panel.ts';
 import type { ServiceEntry, ServiceType } from '../src/types.ts';
-import { llamacppLaunchMode } from '../src/entry.ts';
+import { llamacppLaunchMode, tasksOfEntry } from '../src/entry.ts';
 import { panelText, type PanelText } from './strings.ts';
 import './style.css';
 
@@ -307,7 +307,10 @@ function seedOfEntry(entry: ServiceEntry): FormSeed {
     secretName: entry.secretName ?? '',
     modelProfile: entry.modelProfile ?? '',
     models: (entry.models ?? []).join(', '),
-    tasks: (entry.tasks ?? []).join(','),
+    // 编辑旧条目时按后端的有效默认显示；新建草稿才用 chat。
+    tasks: entry.type === 'llamacpp' && !entry.tasks?.length
+      ? tasksOfEntry(entry).join(',')
+      : (entry.tasks ?? []).join(','),
     launchMode: entry.type === 'llamacpp' ? llamacppLaunchMode(entry) : '',
     optionsText: entry.options && Object.keys(entry.options).length
       ? JSON.stringify(entry.options, null, 2)
@@ -733,6 +736,8 @@ function buildServiceForm(
     }
     if (next === 'openai' || next === 'systemone') manage.setChecked(false);
     if (next === 'startlux') {
+      // startlux 默认是本地托管服务；从 openai/systemone 切过来时恢复勾选，字段才可见。
+      manage.setChecked(true);
       selectedModels.splice(0, selectedModels.length);
       models.value = '';
     }
@@ -821,13 +826,18 @@ function buildServiceForm(
       options.launchMode = mode;
 
       const modelsDirValue = modelsDir.value.trim();
-      if (!modelsDirValue) return { error: T.badModelsDir };
-      options.modelsDir = modelsDirValue;
-
-      if (mode === 'single' && selectedModels.length === 0
-        && !/(^|\s)(-m|--model)(\s|=)/.test(args.value)) {
-        return { error: T.badSingleModel };
+      const argsText = args.value;
+      const hasModelArg = /(^|\s)(-m|--model)(\s|=)/.test(argsText);
+      const hasModelsDirArg = /(^|\s)--models-dir(\s|=)/.test(argsText);
+      if (mode === 'single') {
+        if (!hasModelArg && (!modelsDirValue || selectedModels.length === 0)) {
+          return { error: T.badSingleModel };
+        }
+      } else if (!modelsDirValue && !hasModelsDirArg) {
+        return { error: T.badModelsDir };
       }
+      if (modelsDirValue) options.modelsDir = modelsDirValue;
+      else delete options.modelsDir;
 
       const cacheDirValue = cacheDir.value.trim();
       if (cacheDirValue) options.cacheDir = cacheDirValue;

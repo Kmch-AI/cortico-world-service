@@ -727,6 +727,52 @@ assert.deepEqual(singleUpdate.args[1].models, ['Qwen3-Embedding-0.6B-Q8_0'], 'si
 assert.equal(singleUpdate.args[1].options.launchMode, 'single', 'single-model launch mode saves');
 console.log(`llamacpp smoke ok: models=${JSON.stringify(singleUpdate.args[1].models)} options=${JSON.stringify(singleUpdate.args[1].options)}`);
 
+// 旧条目没有显式 tasks 时，编辑表单要显示后端有效默认，保存不能把它悄悄改成 chat。
+state.services.push(service({
+  id: 'legacy-tasks',
+  name: 'Legacy tasks',
+  type: 'llamacpp',
+  endpoint: 'http://127.0.0.1:8085',
+  serverDir: 'C:/llama',
+  options: { launchMode: 'router', modelsDir: 'D:/models' },
+}, 'off'));
+services.intervals[0].fn();
+await settle();
+card('legacy-tasks', servicesRoot).click();
+await settle();
+const legacyEditor = one('.svc-editor', servicesRoot);
+assert.equal(fieldControl(legacyEditor, '模型任务').value, 'embeddings,rerank', 'legacy entry shows the backend default tasks');
+one('.svc-editor .actions .btn.primary', servicesRoot).click();
+await settle();
+const legacyUpdate = calls.findLast(item => item.method === 'update');
+assert.ok(legacyUpdate, 'legacy entry update saves');
+assert.deepEqual(legacyUpdate.args[1].tasks, ['embeddings', 'rerank'], 'editing a legacy entry preserves its effective tasks');
+
+// 单模型可以只用 args 里的 -m，不强制填 GGUF 目录。
+one('.connection-create > .btn', servicesRoot).click();
+await settle();
+const argsEditor = one('.svc-editor', servicesRoot);
+const argsType = fieldControl(argsEditor, '类型');
+argsType.value = 'llamacpp';
+fire(argsType, 'change');
+const argsMode = fieldControl(argsEditor, '启动方式');
+argsMode.value = 'single';
+fire(argsMode, 'change');
+const argsName = fieldControl(argsEditor, '名称');
+argsName.value = 'Args model';
+fire(argsName, 'input');
+const argsField = fieldControl(argsEditor, '参数');
+argsField.value = '-m D:/models/from-args.gguf -ngl 99';
+fire(argsField, 'input');
+one('.svc-editor .actions .btn.primary', servicesRoot).click();
+await settle();
+const argsAdd = calls.findLast(item => item.method === 'add');
+assert.ok(argsAdd, 'args-only single model saves');
+assert.equal(argsAdd.args[0].type, 'llamacpp');
+assert.equal(argsAdd.args[0].options.launchMode, 'single');
+assert.equal(argsAdd.args[0].options.modelsDir, undefined, 'args-only single model does not invent a modelsDir');
+console.log(`llamacpp args-only smoke ok: options=${JSON.stringify(argsAdd.args[0].options)}`);
+
 // ---------------------------------------------------------------------------
 // 网关面板:三块编号折叠区。
 // ---------------------------------------------------------------------------

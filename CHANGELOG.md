@@ -9,6 +9,7 @@
 - 任务新增 `chat`（只提供模型，不加 `--embeddings` / `--reranking`）；`llamacpp` 条目再带 `systemone` 任务会在启动前提示迁移到 StartLux Decision。
 - `/v1/systemone` 直接把请求转发到 `startlux` / `systemone` 条目自己的端点，不再做伴生端点改写。
 - 服务面板：卡片类型药丸用显示名；模型药丸多选时显示首个 `+N`；StartLux Decision 增加模型目录、llama.cpp 服务/地址、思考模式/阈值、Instant 与 venv 说明；删除伴生 PID 行。
+- 面板回归修复：编辑没有显式 `tasks` 的旧 llama.cpp 条目时保持后端的 `embeddings` + `rerank` 默认；单模型只在 `args` 里写 `-m`、没有 GGUF 目录时允许保存；从 `openai` / `systemone` 切到 `startlux` 时恢复「托管进程」勾选。
 - 服务包 11 个文件 182 个测试全绿；typecheck、build:webui、smoke:webui 通过。
 - 版本按类型与启动方式变更升 minor。
 
