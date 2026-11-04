@@ -49,6 +49,11 @@ describe('endpointUrl', () => {
       .toBe('http://127.0.0.1:8090');
     expect(endpointUrl(entry({ type: 'llamacpp', endpoint: 'http://127.0.0.1' })))
       .toBe('http://127.0.0.1:8081');
+    // 外部域名不套本地预设端口,仍按协议取 80/443。
+    expect(endpointUrl(entry({ type: 'systemone', endpoint: 'https://api.example.com' })))
+      .toBe('https://api.example.com');
+    expect(endpointUrl(entry({ type: 'llamacpp', endpoint: 'http://api.example.com' })))
+      .toBe('http://api.example.com');
     expect(endpointUrl(entry({ type: 'openai', endpoint: 'https://host' }))).toBe('https://host');
     expect(endpointUrl(entry({ type: 'openai', endpoint: 'http://host' }))).toBe('http://host');
   });

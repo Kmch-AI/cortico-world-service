@@ -136,11 +136,11 @@ corepack pnpm add "D:/path/to/cortico-world-service" --ignore-workspace
 | `openai` | `openai` | https 443，否则 80 |
 | `sing` | `sing` | 9882 |
 | `svc` | `sing` | 9882 |
-| `systemone` | `systemone` | 8090 |
-| `llamacpp` | `llamacpp` | 8081 |
+| `systemone` | `systemone` | 回环 8090，否则按协议 |
+| `llamacpp` | `llamacpp` | 回环 8081，否则按协议 |
 | `custom` | `custom` | 按协议 |
 
-- 端点缺主机时按 `127.0.0.1`；缺端口时按上表补。
+- 端点缺主机时按 `127.0.0.1`；缺端口时按上表补。`8090` / `8081` 只用于回环地址；`https://api.example.com` 这类外部端点仍用 443，`http://` 用 80。
 - 健康路径固定 `/health`；`openai` / `custom` / `systemone` 的 `/health` 回 404 时改探 `/v1/models`。
 - audiocpp 的配置文件固定读 `<serverDir>/server.json`。
 

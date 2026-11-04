@@ -9,6 +9,9 @@ const DEFAULT_PORTS: Partial<Record<ServiceType, number>> = {
   audiocpp: 8080,
   sing: 9882,
   svc: 9882,
+};
+/** 本地预设端口;只在回环地址补齐,外部域名仍按 http/https 取 80/443。 */
+const LOOPBACK_PORTS: Partial<Record<ServiceType, number>> = {
   llamacpp: 8081,
   systemone: 8090,
 };
@@ -22,7 +25,14 @@ function typeOf(value: TypeArg): ServiceType {
   return typeof value === 'string' ? value : value.type;
 }
 
-function defaultPort(type: ServiceType, protocol: string): number {
+function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '0.0.0.0';
+}
+
+function defaultPort(type: ServiceType, protocol: string, hostname: string): number {
+  const local = LOOPBACK_PORTS[type];
+  if (local !== undefined && isLoopbackHost(hostname)) return local;
   return DEFAULT_PORTS[type] ?? SCHEME_PORTS[protocol] ?? 80;
 }
 
@@ -45,8 +55,8 @@ function hasScheme(value: string): boolean {
 
 /**
  * 归一化端点:无协议按 http;缺主机用 127.0.0.1;缺端口按类型补
- * (audiocpp 8080、sing/svc 9882、llamacpp 8081、systemone 8090、其余按协议)。
- * 保留路径,去掉末尾斜杠。
+ * (audiocpp 8080、sing/svc 9882;llamacpp/systemone 只在回环地址补 8081/8090,
+ * 外部域名按协议 80/443)。保留路径,去掉末尾斜杠。
  */
 export function endpointUrl(entry: EndpointLike): string {
   const raw = (entry.endpoint ?? '').trim();
@@ -60,7 +70,7 @@ export function endpointUrl(entry: EndpointLike): string {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     url = new URL(`http://${DEFAULT_HOST}`);
   }
-  if (!url.port) url.port = String(defaultPort(entry.type, url.protocol));
+  if (!url.port) url.port = String(defaultPort(entry.type, url.protocol, url.hostname));
   const path = url.pathname.replace(/\/+$/, '');
   return `${url.protocol}//${url.host}${path}`;
 }
@@ -71,7 +81,7 @@ export function hostPort(entry: EndpointLike): { host: string; port: number } {
   const host = url.hostname.startsWith('[') && url.hostname.endsWith(']')
     ? url.hostname.slice(1, -1)
     : url.hostname;
-  const port = url.port ? Number(url.port) : defaultPort(entry.type, url.protocol);
+  const port = url.port ? Number(url.port) : defaultPort(entry.type, url.protocol, url.hostname);
   return { host: host || DEFAULT_HOST, port };
 }
 
