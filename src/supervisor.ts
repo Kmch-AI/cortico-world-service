@@ -273,7 +273,7 @@ export class Supervisor {
     child.once('exit', (code, signal) => this.onExit(child, code, signal));
     child.once('error', (error) => this.onExit(child, null, null, error));
 
-    // 没有 HTTP 协议(llamacpp)的条目无法探活:进程起来就算在线。
+    // 没有 HTTP 协议(none)的条目无法探活:进程起来就算在线。
     if (healthPathOf(this.entry.type) === null) {
       this.onlineSince = this.deps.now();
       this.setPhase('online', `${this.entry.type} · process running`);
@@ -428,7 +428,7 @@ export class Supervisor {
   }
 
   /**
-   * `/health` 是默认探活;openai / custom 的 `/health` 回 404 时,
+   * `/health` 是默认探活;openai / custom / systemone 的 `/health` 回 404 时,
    * 退回 OpenAI 形状的 `/v1/models`。
    */
   private async health(): Promise<{ models: number; backend: string } | null> {
@@ -437,7 +437,8 @@ export class Supervisor {
     const first = await this.probe(url);
     if (first.health) return first.health;
     const protocol = protocolOf(this.entry);
-    if (first.status === 404 && (protocol === 'openai' || protocol === 'custom')) {
+    if (first.status === 404
+      && (protocol === 'openai' || protocol === 'custom' || protocol === 'systemone')) {
       const fallback = await this.probe(apiUrl(endpointUrl(this.entry), '/models'));
       return fallback.health;
     }

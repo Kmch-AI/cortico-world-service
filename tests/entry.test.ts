@@ -25,8 +25,8 @@ describe('type → protocol', () => {
     ['openai', 'openai'],
     ['sing', 'sing'],
     ['svc', 'sing'],
-    ['llamacpp', 'none'],
-    ['systemone', 'openai'],
+    ['llamacpp', 'llamacpp'],
+    ['systemone', 'systemone'],
     ['custom', 'custom'],
   ] as Array<[ServiceType, string]>)('protocolOf(%s) = %s', (type, protocol) => {
     expect(protocolOf(type)).toBe(protocol);
@@ -69,13 +69,17 @@ describe('hostPort', () => {
 });
 
 describe('healthPathOf', () => {
-  it('只有 llamacpp / none 没有健康路径', () => {
+  it('所有带 HTTP 协议的类型都探 /health', () => {
     expect(healthPathOf('audiocpp')).toBe('/health');
     expect(healthPathOf('openai')).toBe('/health');
     expect(healthPathOf('sing')).toBe('/health');
     expect(healthPathOf('custom')).toBe('/health');
-    expect(healthPathOf('llamacpp')).toBeNull();
-    expect(healthUrl(entry({ type: 'llamacpp', endpoint: 'http://127.0.0.1:8080' }))).toBeNull();
+    expect(healthPathOf('systemone')).toBe('/health');
+    expect(healthPathOf('llamacpp')).toBe('/health');
+    expect(healthUrl(entry({ type: 'llamacpp', endpoint: 'http://127.0.0.1:8080' })))
+      .toBe('http://127.0.0.1:8080/health');
+    expect(healthUrl(entry({ type: 'systemone', endpoint: 'http://127.0.0.1:9010/v1' })))
+      .toBe('http://127.0.0.1:9010/health');
     expect(healthUrl(entry({ type: 'custom', endpoint: 'http://127.0.0.1:9010/v1' })))
       .toBe('http://127.0.0.1:9010/health');
   });

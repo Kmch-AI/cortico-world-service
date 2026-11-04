@@ -31,8 +31,8 @@ export function protocolOf(entryOrType: TypeArg): ServiceProtocol {
     case 'openai': return 'openai';
     case 'sing': return 'sing';
     case 'svc': return 'sing';
-    case 'llamacpp': return 'none';
-    case 'systemone': return 'openai';
+    case 'llamacpp': return 'llamacpp';
+    case 'systemone': return 'systemone';
     case 'custom': return 'custom';
   }
 }

@@ -73,6 +73,16 @@ function defaultIo(opts: CatalogOptions): DiscoveryIo {
   };
 }
 
+/** 上游没声明 tasks 时按协议给默认值;llamacpp 与 systemone 不是语音模型。 */
+function defaultTasksOf(entry: ServiceEntry): string[] {
+  switch (protocolOf(entry)) {
+    case 'sing': return [TASK_SING];
+    case 'llamacpp': return ['embeddings', 'rerank'];
+    case 'systemone': return ['chat'];
+    default: return [TASK_TTS];
+  }
+}
+
 function tasksOf(raw: Record<string, unknown>, fallback: string[]): string[] {
   const source = Array.isArray(raw.tasks) ? raw.tasks
     : Array.isArray(raw.capabilities) ? raw.capabilities
@@ -130,7 +140,7 @@ function recordOf(item: unknown, entry: ServiceEntry, source: ModelRecord['sourc
   if (typeof item === 'string') {
     const id = item.trim();
     return id ? {
-      id, voices: [], tasks: protocolOf(entry) === 'sing' ? [TASK_SING] : [TASK_TTS], service: entry.id, source,
+      id, voices: [], tasks: defaultTasksOf(entry), service: entry.id, source,
     } : null;
   }
   if (!isPlainObject(item)) return null;
@@ -149,7 +159,7 @@ function recordOf(item: unknown, entry: ServiceEntry, source: ModelRecord['sourc
     id: id.slice(0, 200),
     ...(label ? { label: label.slice(0, 200) } : {}),
     voices: voicesOf(item),
-    tasks: tasksOf(item, protocolOf(entry) === 'sing' ? [TASK_SING] : [TASK_TTS]),
+    tasks: tasksOf(item, defaultTasksOf(entry)),
     service: entry.id,
     source,
     ...(family ? { family: family.slice(0, 200) } : {}),

@@ -4,8 +4,10 @@ import { ServiceError } from '../errors.ts';
 import type { ServiceEntry, ServiceProtocol } from '../types.ts';
 import { audiocppProtocol } from './audiocpp.ts';
 import { customProtocol } from './custom.ts';
+import { llamacppProtocol } from './llamacpp.ts';
 import { openaiProtocol } from './openai.ts';
 import { singProtocol } from './sing.ts';
+import { systemoneProtocol } from './systemone.ts';
 import type { ProtocolAdapter } from './types.ts';
 
 const ADAPTERS: Readonly<Record<Exclude<ServiceProtocol, 'none'>, ProtocolAdapter>> = {
@@ -13,6 +15,8 @@ const ADAPTERS: Readonly<Record<Exclude<ServiceProtocol, 'none'>, ProtocolAdapte
   openai: openaiProtocol,
   custom: customProtocol,
   sing: singProtocol,
+  systemone: systemoneProtocol,
+  llamacpp: llamacppProtocol,
 };
 
 export function adapterOf(entry: ServiceEntry): ProtocolAdapter {
@@ -34,5 +38,8 @@ export function acceptsSing(entry: ServiceEntry): boolean {
   return protocolOf(entry) === 'sing';
 }
 
-export { audiocppProtocol, customProtocol, openaiProtocol, protocolOf, singProtocol };
-export type { ProtocolAdapter, ProtocolRequest, VoiceListRequest } from './types.ts';
+export {
+  audiocppProtocol, customProtocol, llamacppProtocol, openaiProtocol, protocolOf, singProtocol,
+  systemoneProtocol,
+};
+export type { JsonRequest, ProtocolAdapter, ProtocolRequest, VoiceListRequest } from './types.ts';

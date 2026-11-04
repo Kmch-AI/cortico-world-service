@@ -8,8 +8,8 @@ export type AudiocppBackend = Backend;
 /** 服务类型;决定启动预设与 HTTP 协议,见 `protocolOf`。 */
 export type ServiceType = 'audiocpp' | 'openai' | 'sing' | 'llamacpp' | 'systemone' | 'svc' | 'custom';
 
-/** HTTP 方言。`none` 表示只托管进程,不代理请求。 */
-export type ServiceProtocol = 'audiocpp' | 'openai' | 'custom' | 'sing' | 'none';
+/** HTTP 方言。`none` 表示只托管进程,不代理请求(保留给未来没有 HTTP 端点的类型)。 */
+export type ServiceProtocol = 'audiocpp' | 'openai' | 'custom' | 'sing' | 'systemone' | 'llamacpp' | 'none';
 
 /** `worlds.service.services` 的一项。 */
 export interface ServiceEntry {
@@ -120,7 +120,7 @@ export interface ModelProfileSpeedLevel {
 export interface ModelProfile {
   id: string;
   label: string;
-  protocol: 'audiocpp' | 'openai' | 'custom' | 'sing';
+  protocol: Exclude<ServiceProtocol, 'none'>;
   /** 模型 id 前缀/通配;'*' 兜底。 */
   match?: string[];
   /** 请求字段到上游字段的映射。 */
@@ -209,6 +209,36 @@ export interface SpeechRequest {
 export interface SingRequest {
   model?: string;
   lyrics: string;
+}
+
+/** 上游 JSON 回应;状态码保留,正文原样交给网关。 */
+export interface JsonResult {
+  status: number;
+  body: unknown;
+}
+
+/** 网关收到的 `POST /v1/systemone`;`body` 原样转发。 */
+export interface SystemOneRequest {
+  model?: string;
+  body: Record<string, unknown>;
+}
+
+/** 网关收到的 `POST /v1/embeddings`;`input` 与其余字段原样转发。 */
+export interface EmbeddingsRequest {
+  model?: string;
+  /** 字符串或数组(字符串、token id 或它们的组合)。 */
+  input: unknown;
+  dimensions?: number;
+  body: Record<string, unknown>;
+}
+
+/** 网关收到的 `POST /v1/rerank`;`documents` 原样转发。 */
+export interface RerankRequest {
+  model?: string;
+  query: string;
+  documents: unknown[];
+  top_n?: number;
+  body: Record<string, unknown>;
 }
 
 /** `worlds.service` 的配置段。 */

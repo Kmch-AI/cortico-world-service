@@ -9,6 +9,7 @@ export type ServiceErrorKind =
   | 'notfound'
   | 'too_large'
   | 'rate'
+  | 'unsupported'
   | 'upstream'
   | 'unavailable'
   | 'timeout';
@@ -25,6 +26,7 @@ const SHAPES: Readonly<Record<ServiceErrorKind, ErrorShape>> = {
   notfound: { status: 404, type: 'not_found_error', code: 'not_found' },
   too_large: { status: 413, type: 'invalid_request_error', code: 'request_too_large' },
   rate: { status: 429, type: 'rate_limit_error', code: 'queue_full' },
+  unsupported: { status: 501, type: 'invalid_request_error', code: 'unsupported' },
   upstream: { status: 502, type: 'upstream_error', code: 'upstream_failed' },
   unavailable: { status: 503, type: 'service_unavailable', code: 'not_ready' },
   timeout: { status: 504, type: 'timeout_error', code: 'timeout' },
@@ -73,6 +75,10 @@ export class ServiceError extends Error {
 
   static tooLarge(message: string): ServiceError {
     return new ServiceError('too_large', message);
+  }
+
+  static unsupported(message: string): ServiceError {
+    return new ServiceError('unsupported', message);
   }
 
   static upstream(message: string, cause?: unknown): ServiceError {

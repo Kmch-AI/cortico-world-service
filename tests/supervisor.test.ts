@@ -205,6 +205,37 @@ describe('Supervisor', () => {
     await sup.stop();
   });
 
+  it('systemone 条目 /health 回 404 时退回 /v1/models', async () => {
+    const h = harness({
+      id: 'systemone',
+      name: 'SystemOne',
+      type: 'systemone',
+      endpoint: 'http://127.0.0.1:9020',
+      manage: false,
+      serverDir: '',
+      options: {},
+    });
+    const seen: string[] = [];
+    h.deps.fetch = (async (input: Parameters<typeof fetch>[0]) => {
+      const url = String(input);
+      seen.push(url);
+      if (url === 'http://127.0.0.1:9020/health') return new Response('no', { status: 404 });
+      if (url === 'http://127.0.0.1:9020/v1/models') {
+        return new Response(JSON.stringify({ object: 'list', data: [{ id: 'sys-1' }] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response('no', { status: 404 });
+    }) as typeof fetch;
+    const sup = new Supervisor({ entry: h.entry, dataDir: 'C:/data', log: quietLogger, deps: h.deps });
+    await sup.start();
+    expect(seen).toEqual(['http://127.0.0.1:9020/health', 'http://127.0.0.1:9020/v1/models']);
+    expect(sup.status().phase).toBe('online');
+    expect(sup.status().models).toBe(1);
+    await sup.stop();
+  });
+
   it('audiocpp 的 /health 回 404 时不退回 /v1/models', async () => {
     const h = harness({ manage: false }, { adopt: false });
     const seen: string[] = [];

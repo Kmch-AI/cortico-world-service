@@ -2,7 +2,7 @@
 
 Kmch AI · 服务:托管本机推理服务，并把它们收在一条 OpenAI 形状的语音接口后面。audiocpp 只是其中一种后端。
 
-0.4.3 有通用进程托管与多条目编排，也有统一网关：`/health`、`/v1/models`、`/v1/audio/voices`、`/v1/audio/speech`、`/v1/audio/sing` 都接在同一组服务条目上。条目只填名称与端点，协议、主机端口与健康路径由类型推导；模型差异用数据 profile 表达，新增模型多数只加配置。audiocpp 的默认端口是 8080。
+0.5.0 有通用进程托管与多条目编排，也有统一网关：`/health`、`/v1/models`、`/v1/audio/voices`、`/v1/audio/speech`、`/v1/audio/sing`、`/v1/systemone`、`/v1/embeddings`、`/v1/rerank` 都接在同一组服务条目上。条目只填名称与端点，协议、主机端口与健康路径由类型推导；模型差异用数据 profile 表达，新增模型多数只加配置。audiocpp 的默认端口是 8080。
 
 ## 为什么是 World，不是 provider
 
@@ -107,12 +107,12 @@ corepack pnpm add "D:/path/to/cortico-world-service" --ignore-workspace
 | `openai` | `openai` | https 443，否则 80 |
 | `sing` | `sing` | 9882 |
 | `svc` | `sing` | 9882 |
-| `systemone` | `openai` | https 443，否则 80 |
-| `llamacpp` | `none`（只托管进程） | 按协议 |
+| `systemone` | `systemone` | https 443，否则 80 |
+| `llamacpp` | `llamacpp` | 按协议 |
 | `custom` | `custom` | 按协议 |
 
 - 端点缺主机时按 `127.0.0.1`；缺端口时按上表补。
-- 健康路径固定 `/health`，只有 `llamacpp` 不探活；`openai` / `custom` 的 `/health` 回 404 时改探 `/v1/models`。
+- 健康路径固定 `/health`；`openai` / `custom` / `systemone` 的 `/health` 回 404 时改探 `/v1/models`。
 - audiocpp 的配置文件固定读 `<serverDir>/server.json`。
 
 ### id 生成
@@ -122,14 +122,14 @@ corepack pnpm add "D:/path/to/cortico-world-service" --ignore-workspace
 ### 启动预设
 
 - `audiocpp`：默认 `audiocpp_server(.exe)`，参数 `--config --host --port --backend --device --threads --idle-unload-ms --no-ui` 加 `args`；`--host` / `--port` 来自 `endpoint`。
-- `llamacpp`：默认 `llama-server(.exe)`，只用条目自己的 `args`。只想跑 LLM 时用框架内建的 llamacpp provider，不要在这里重复托管。
+- `llamacpp`：默认 `llama-server(.exe)`，只用条目自己的 `args`。网关只代理 `/v1/embeddings` 与 `/v1/rerank`；LLM chat 仍用框架内建的 llamacpp provider。
 - `systemone` / `svc` / `custom` / `openai` / `sing`：操作者给 `binary` 与 `args`。
 
 启动前先探活：已经活着就接管，不重复拉起。停止时结束子进程。服务输出写到 `dataDir/service-<id>.log`。
 
 ## HTTP 网关
 
-默认 `http://127.0.0.1:9883`，由 World 启停。只认这五条路由，不代理 LLM 的 chat/responses。
+默认 `http://127.0.0.1:9883`，由 World 启停。只认这八条路由，不代理 LLM 的 chat/responses。
 
 | 路由 | 说明 |
 |---|---|
@@ -138,10 +138,13 @@ corepack pnpm add "D:/path/to/cortico-world-service" --ignore-workspace
 | `GET /v1/audio/voices?model=&service=` | 返回 `{object, model, voices[], data[]}` |
 | `POST /v1/audio/speech` | `{model?, input, voice?, response_format?, speed?, instructions?, emotion?, language?, options?}` |
 | `POST /v1/audio/sing` | `{model?, lyrics}`；路由到 `type: 'sing'` / `'svc'` 的条目 |
+| `POST /v1/systemone` | JSON 对象原样转发到 `type: 'systemone'` 的条目；`model` 用于选条目，不做 token 截断 |
+| `POST /v1/embeddings` | `{model?, input, dimensions?}` 原样转发到 `type: 'llamacpp'` 的条目 |
+| `POST /v1/rerank` | `{model?, query, documents, top_n?}` 原样转发到 `type: 'llamacpp'` 的条目；上游 404/405/501 回 501 `unsupported` |
 
 - 令牌：配置只存 `tokenSecret` 名字，值从部署 `.env` 读。非回环地址没有令牌、或变量名为空值，网关拒绝启动。`allowQueryToken: true` 时才接受 `?token=`。
 - 限额：请求体 1 MiB，`input` 8000 字，`instructions` 2000 字，`options` 16 KiB。
-- 错误：JSON `{error:{message,type,code,param}}`；400/401/404/413/429/502/503/504，503 带 `Retry-After: 2`。
+- 错误：JSON `{error:{message,type,code,param}}`；400/401/404/413/429/501/502/503/504，503 带 `Retry-After: 2`。
 - 不接收 `play`，不排队、不重试上游；重复请求由客户端决定。
 - 音频回应带 `content-type`、`content-length`，WAV 可算时长时带 `x-voice-seconds`。
 
@@ -210,6 +213,7 @@ pnpm smoke:host "D:/AI/audio-v0.9.3-bin-windows-x64-cuda13.3" 8018
 ## 版本规则
 
 - 每次发版至少升 patch（第三位）；较大改动升 minor（第二位）。不单独发明 major，除非契约破坏到需要另起包。
+- 0.5.0 按此规则升 minor：新增 `/v1/systemone`、`/v1/embeddings`、`/v1/rerank` 三条网关路由与对应协议适配器。
 - 0.4.3 按此规则升 patch：服务页左栏吸顶，右侧配置滚动时列表不跟着走。
 - 0.4.2 按此规则升 patch：IndexTTS2 的 `use_emotion_text` / `emotion_text` 改由语音语义管理，修复旧 options 覆盖。
 - 0.4.1 按此规则升 patch：补齐 Ming 3.0 的模型页参数，不改协议与页面布局。

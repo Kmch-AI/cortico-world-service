@@ -43,14 +43,16 @@ export {
 } from './profiles/resolve.ts';
 export type { BuiltRequest } from './profiles/resolve.ts';
 export {
-  acceptsSing, acceptsSpeech, adapterOf, audiocppProtocol, customProtocol, openaiProtocol,
-  singProtocol,
+  acceptsSing, acceptsSpeech, adapterOf, audiocppProtocol, customProtocol, llamacppProtocol,
+  openaiProtocol, singProtocol, systemoneProtocol,
 } from './protocol/index.ts';
-export type { ProtocolAdapter, ProtocolRequest, VoiceListRequest } from './protocol/index.ts';
 export type {
-  AudioFormat, AudiocppBackend, Backend, GatewayPhase, GatewayStatus, ModelField, ModelParameter,
-  ModelParameterType, ModelProfile, ModelProfileOption, ModelProfileSpeedLevel, ModelProfileVariant,
-  ModelRecord, Phase,
+  JsonRequest, ProtocolAdapter, ProtocolRequest, VoiceListRequest,
+} from './protocol/index.ts';
+export type {
+  AudioFormat, AudiocppBackend, Backend, EmbeddingsRequest, GatewayPhase, GatewayStatus, JsonResult,
+  ModelField, ModelParameter, ModelParameterType, ModelProfile, ModelProfileOption,
+  ModelProfileSpeedLevel, ModelProfileVariant, ModelRecord, Phase, RerankRequest,
   ServiceCatalog, ServiceConfigSection, ServiceEntry, ServiceProtocol, ServiceStatus, ServiceType,
-  SingRequest, SpeechRequest, SupervisorStatus, TtsAudio, VoiceOption,
+  SingRequest, SpeechRequest, SupervisorStatus, SystemOneRequest, TtsAudio, VoiceOption,
 } from './types.ts';

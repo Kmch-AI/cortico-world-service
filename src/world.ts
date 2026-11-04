@@ -19,12 +19,15 @@ import type {
 } from './panel.ts';
 import { ModelCatalog } from './profiles/discover.ts';
 import { buildSing, buildSpeech, resolveProfile, resolveSingProfile } from './profiles/resolve.ts';
-import { acceptsSing, acceptsSpeech, adapterOf, protocolOf } from './protocol/index.ts';
+import {
+  acceptsSing, acceptsSpeech, adapterOf, protocolOf, type JsonRequest,
+} from './protocol/index.ts';
 import { ENV_NAME_RE } from './secrets.ts';
 import type { SupervisorDeps } from './supervisor.ts';
 import type {
-  GatewayPhase, GatewayStatus, ModelRecord, ServiceConfigSection, ServiceEntry, ServiceStatus,
-  SingRequest, SpeechRequest, TtsAudio,
+  EmbeddingsRequest, GatewayPhase, GatewayStatus, JsonResult, ModelRecord, RerankRequest,
+  ServiceConfigSection, ServiceEntry, ServiceStatus, SingRequest, SpeechRequest, SystemOneRequest,
+  TtsAudio,
 } from './types.ts';
 import { normalizeEntry, normalizeGatewayPatch, validateServices } from './validate.ts';
 
@@ -549,6 +552,9 @@ export class ServiceWorld implements World {
       voices: (query) => this.voiceList(query),
       speech: (request, signal) => this.speech(request, signal),
       sing: (request, signal) => this.sing(request, signal),
+      systemone: (request, signal) => this.systemone(request, signal),
+      embeddings: (request, signal) => this.embeddings(request, signal),
+      rerank: (request, signal) => this.rerank(request, signal),
     };
   }
 
@@ -794,6 +800,102 @@ export class ServiceWorld implements World {
       secret: (name) => this.secretOf(name),
       log: this.log,
     });
+  }
+
+  /** 在启用条目里按 model 选一个;没有 model 时按配置顺序取第一个。 */
+  private selectJsonEntry(
+    protocol: 'systemone' | 'llamacpp',
+    requested: string | undefined,
+    label: string,
+  ): ServiceEntry {
+    const entries = this.manager.entries()
+      .filter((entry) => entry.enabled && protocolOf(entry) === protocol);
+    if (!entries.length) throw ServiceError.unavailable(`no ${label} service configured`);
+    const wanted = requested?.trim();
+    if (!wanted) return entries[0]!;
+    const found = this.catalog.find(wanted, entries);
+    if (found) return found.entry;
+    const configured = entries.find((entry) => (entry.models ?? [])
+      .some((model) => model.toLowerCase() === wanted.toLowerCase()));
+    if (configured) return configured;
+    // 单条目没有歧义,未知模型也透传,和 speech 的行为一致。
+    if (entries.length === 1) return entries[0]!;
+    throw ServiceError.notfound(`unknown model: ${wanted}`, 'model');
+  }
+
+  /** 只记录状态码与延迟,不记录请求或回应的正文。 */
+  private async jsonCall(
+    label: string,
+    entry: ServiceEntry,
+    call: () => Promise<JsonResult>,
+  ): Promise<JsonResult> {
+    const started = Date.now();
+    try {
+      const result = await call();
+      this.log.info(`服务 ${label} 请求完成`, {
+        service: entry.id,
+        status: result.status,
+        ms: Date.now() - started,
+      });
+      return result;
+    } catch (error) {
+      this.log.info(`服务 ${label} 请求失败`, {
+        service: entry.id,
+        status: error instanceof ServiceError ? error.status : 502,
+        ms: Date.now() - started,
+      });
+      throw error;
+    }
+  }
+
+  private jsonRequest(
+    entry: ServiceEntry,
+    body: Record<string, unknown>,
+    signal: AbortSignal,
+  ): JsonRequest {
+    return {
+      entry,
+      body,
+      timeoutMs: this.timeoutMs(),
+      signal,
+      fetch: this.fetchImpl,
+      secret: (name: string) => this.secretOf(name),
+      log: this.log,
+    };
+  }
+
+  private async systemone(request: SystemOneRequest, signal: AbortSignal): Promise<JsonResult> {
+    const entry = this.selectJsonEntry('systemone', request.model, 'systemone');
+    const status = this.manager.statusOf(entry.id);
+    if (!status || status.phase !== 'online') {
+      throw ServiceError.unavailable(`service ${entry.id} is not ready`);
+    }
+    const adapter = adapterOf(entry);
+    if (!adapter.systemone) {
+      throw ServiceError.unsupported(`service ${entry.id} does not support systemone`);
+    }
+    const call = adapter.systemone;
+    return this.jsonCall('systemone', entry, () => call(this.jsonRequest(entry, request.body, signal)));
+  }
+
+  private async embeddings(request: EmbeddingsRequest, signal: AbortSignal): Promise<JsonResult> {
+    const entry = this.selectJsonEntry('llamacpp', request.model, 'llamacpp');
+    const adapter = adapterOf(entry);
+    if (!adapter.embeddings) {
+      throw ServiceError.unsupported(`service ${entry.id} does not support embeddings`);
+    }
+    const call = adapter.embeddings;
+    return this.jsonCall('embeddings', entry, () => call(this.jsonRequest(entry, request.body, signal)));
+  }
+
+  private async rerank(request: RerankRequest, signal: AbortSignal): Promise<JsonResult> {
+    const entry = this.selectJsonEntry('llamacpp', request.model, 'llamacpp');
+    const adapter = adapterOf(entry);
+    if (!adapter.rerank) {
+      throw ServiceError.unsupported(`service ${entry.id} does not support rerank`);
+    }
+    const call = adapter.rerank;
+    return this.jsonCall('rerank', entry, () => call(this.jsonRequest(entry, request.body, signal)));
   }
 
   private async refreshCatalogs(): Promise<void> {

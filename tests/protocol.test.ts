@@ -2,10 +2,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { ServiceError } from '../src/errors.ts';
 import { audiocppProtocol } from '../src/protocol/audiocpp.ts';
 import { customProtocol } from '../src/protocol/custom.ts';
+import { llamacppProtocol } from '../src/protocol/llamacpp.ts';
 import { openaiProtocol } from '../src/protocol/openai.ts';
 import { wavSeconds } from '../src/protocol/http.ts';
 import { singProtocol } from '../src/protocol/sing.ts';
-import type { ProtocolRequest, VoiceListRequest } from '../src/protocol/types.ts';
+import { systemoneProtocol } from '../src/protocol/systemone.ts';
+import type { JsonRequest, ProtocolRequest, VoiceListRequest } from '../src/protocol/types.ts';
 import type { ServiceEntry } from '../src/types.ts';
 import { audio, json, startUpstream, type Upstream } from './helpers/upstream.ts';
 import { wavBytes } from './helpers/wav.ts';
@@ -45,6 +47,18 @@ function request(
     body: {},
     values: {},
     format: 'wav',
+    timeoutMs: 5000,
+    fetch: (input, init) => fetch(input, init),
+    secret: () => '',
+    ...overrides,
+  };
+}
+
+function jsonRequest(
+  overrides: Partial<JsonRequest> & { entry: ServiceEntry },
+): JsonRequest {
+  return {
+    body: {},
     timeoutMs: 5000,
     fetch: (input, init) => fetch(input, init),
     secret: () => '',
@@ -276,6 +290,119 @@ describe('sing protocol', () => {
       body: { lyrics: 'la' },
       timeoutMs: 30,
     }))).rejects.toMatchObject({ kind: 'timeout', status: 504 });
+  });
+});
+
+describe('systemone protocol', () => {
+  it('POST /v1/systemone 原样转发正文与上游令牌', async () => {
+    const reply = { id: 'r1', choices: [{ message: { role: 'assistant', content: 'hi' } }] };
+    const server = await upstream((_req, res) => json(res, 200, reply));
+    const body = {
+      model: 'sys-1',
+      messages: [{ role: 'user', content: 'hello' }],
+      temperature: 0.2,
+      stream: false,
+    };
+    const result = await systemoneProtocol.systemone!(jsonRequest({
+      entry: entry({ type: 'systemone', endpoint: server.url, secretName: 'SYSTEMONE_TOKEN' }),
+      body,
+      secret: (name) => (name === 'SYSTEMONE_TOKEN' ? 'sys-secret' : ''),
+    }));
+    const recorded = server.requests[0]!;
+    expect(recorded.method).toBe('POST');
+    expect(recorded.url).toBe('/v1/systemone');
+    expect(recorded.headers.authorization).toBe('Bearer sys-secret');
+    expect(JSON.parse(recorded.body)).toEqual(body);
+    expect(result).toEqual({ status: 200, body: reply });
+  });
+
+  it('endpoint 已经带 /v1 时不重复拼', async () => {
+    const server = await upstream((_req, res) => json(res, 200, { ok: true }));
+    await systemoneProtocol.systemone!(jsonRequest({
+      entry: entry({ type: 'systemone', endpoint: `${server.url}/v1` }),
+      body: { messages: [] },
+    }));
+    expect(server.requests[0]?.url).toBe('/v1/systemone');
+  });
+
+  it('上游非 2xx 是 upstream 502,超时是 timeout 504', async () => {
+    const bad = await upstream((_req, res) => json(res, 500, { error: 'boom' }));
+    await expect(systemoneProtocol.systemone!(jsonRequest({
+      entry: entry({ type: 'systemone', endpoint: bad.url }),
+      body: { messages: [] },
+    }))).rejects.toMatchObject({
+      kind: 'upstream',
+      status: 502,
+      message: expect.stringContaining('upstream 500'),
+    });
+
+    const slow = await upstream(async (_req, res) => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      json(res, 200, { ok: true });
+    });
+    await expect(systemoneProtocol.systemone!(jsonRequest({
+      entry: entry({ type: 'systemone', endpoint: slow.url }),
+      body: { messages: [] },
+      timeoutMs: 30,
+    }))).rejects.toMatchObject({ kind: 'timeout', status: 504 });
+  });
+});
+
+describe('llamacpp protocol', () => {
+  it('embeddings POST /v1/embeddings 原样转发正文', async () => {
+    const reply = { object: 'list', data: [{ object: 'embedding', index: 0, embedding: [0.1, 0.2] }] };
+    const server = await upstream((_req, res) => json(res, 200, reply));
+    const body = { model: 'embed-1', input: ['alpha', 'beta'], dimensions: 8 };
+    const result = await llamacppProtocol.embeddings!(jsonRequest({
+      entry: entry({ type: 'llamacpp', endpoint: server.url, secretName: 'LLAMA_TOKEN' }),
+      body,
+      secret: (name) => (name === 'LLAMA_TOKEN' ? 'llama-secret' : ''),
+    }));
+    const recorded = server.requests[0]!;
+    expect(recorded.method).toBe('POST');
+    expect(recorded.url).toBe('/v1/embeddings');
+    expect(recorded.headers.authorization).toBe('Bearer llama-secret');
+    expect(JSON.parse(recorded.body)).toEqual(body);
+    expect(result).toEqual({ status: 200, body: reply });
+  });
+
+  it('rerank POST /v1/rerank 原样转发正文', async () => {
+    const reply = { results: [{ index: 1, relevance_score: 0.9 }] };
+    const server = await upstream((_req, res) => json(res, 200, reply));
+    const body = {
+      model: 'rerank-1',
+      query: 'what is cortico',
+      documents: ['a bot harness', 'a weather service'],
+      top_n: 1,
+    };
+    const result = await llamacppProtocol.rerank!(jsonRequest({
+      entry: entry({ type: 'llamacpp', endpoint: server.url }),
+      body,
+    }));
+    expect(server.requests[0]?.url).toBe('/v1/rerank');
+    expect(JSON.parse(server.requests[0]!.body)).toEqual(body);
+    expect(result).toEqual({ status: 200, body: reply });
+  });
+
+  it.each([404, 405, 501])('rerank 上游 %i 映射为 unsupported 501', async (status) => {
+    const server = await upstream((_req, res) => json(res, status, { error: 'no rerank' }));
+    await expect(llamacppProtocol.rerank!(jsonRequest({
+      entry: entry({ type: 'llamacpp', endpoint: server.url }),
+      body: { query: 'q', documents: ['a'] },
+    }))).rejects.toMatchObject({
+      kind: 'unsupported',
+      status: 501,
+      type: 'invalid_request_error',
+      code: 'unsupported',
+    });
+  });
+
+  it('rerank 其他上游错误仍是 upstream 502', async () => {
+    const server = await upstream((_req, res) => json(res, 500, { error: 'boom' }));
+    await expect(llamacppProtocol.rerank!(jsonRequest({
+      entry: entry({ type: 'llamacpp', endpoint: server.url }),
+      body: { query: 'q', documents: ['a'] },
+    }))).rejects.toMatchObject({ kind: 'upstream', status: 502 });
   });
 });
 

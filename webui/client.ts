@@ -477,7 +477,7 @@ function buildServiceForm(
       || (previousDefault !== undefined && currentEndpoint === previousDefault))) {
       endpoint.value = nextDefault;
     }
-    if (next === 'openai') manage.setChecked(false);
+    if (next === 'openai' || next === 'systemone') manage.setChecked(false);
     lastType = next;
     syncVisibility();
   }, { signal: ctx.signal });

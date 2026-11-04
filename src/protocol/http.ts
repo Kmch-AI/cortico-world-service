@@ -1,6 +1,8 @@
-/** 协议适配器共用的 HTTP 小工具:地址拼接、鉴权头、超时、错误正文、音频回应。 */
+/** 协议适配器共用的 HTTP 小工具:地址拼接、鉴权头、超时、错误正文、音频与 JSON 回应。 */
+import { endpointUrl } from '../entry.ts';
 import { ServiceError, errorMessage } from '../errors.ts';
-import type { AudioFormat, TtsAudio, VoiceOption } from '../types.ts';
+import type { AudioFormat, JsonResult, TtsAudio, VoiceOption } from '../types.ts';
+import type { JsonRequest } from './types.ts';
 
 /** 基础地址可以带 `/v1`,也可以不带;两种都拼出同一个接口。 */
 export function apiUrl(base: string, path: string): string {
@@ -23,6 +25,37 @@ export function mimeFormat(type: string): AudioFormat | undefined {
 
 export function authHeaders(secret: string | undefined): Record<string, string> {
   return secret ? { Authorization: `Bearer ${secret}` } : {};
+}
+
+/**
+ * 非音频协议共用的 JSON POST:地址按 apiUrl 拼接(基础地址可带 `/v1`),
+ * 正文原样序列化,`entry.secretName` 读到的值作为 Bearer。
+ */
+export function jsonPost(req: JsonRequest, path: string): { url: string; init: RequestInit } {
+  const secret = req.entry.secretName ? req.secret(req.entry.secretName) : '';
+  return {
+    url: apiUrl(endpointUrl(req.entry), path),
+    init: {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders(secret),
+      },
+      body: JSON.stringify(req.body),
+    },
+  };
+}
+
+/** 上游 JSON 回应:成功时原样解析,空正文给 null;非 2xx 与坏正文都是 upstream。 */
+export async function readJsonResult(res: Response): Promise<JsonResult> {
+  if (!res.ok) throw ServiceError.upstream(await errorSnippet(res));
+  const text = await res.text();
+  if (!text.trim()) return { status: res.status, body: null };
+  try {
+    return { status: res.status, body: JSON.parse(text) };
+  } catch {
+    throw ServiceError.upstream('upstream returned invalid JSON');
+  }
 }
 
 /** 读一小段错误正文,压成一行。 */

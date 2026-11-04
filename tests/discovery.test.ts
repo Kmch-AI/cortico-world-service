@@ -124,13 +124,14 @@ describe('ModelCatalog discovery', () => {
     expect(net.calls.some((call) => /\/v1\/models$/.test(call.url))).toBe(false);
   });
 
-  it('协议 none 的条目只保留配置模型', async () => {
-    const net = fakeNet({ data: [{ id: 'nope' }] });
+  it('llamacpp 现在有 HTTP 协议,会读 /v1/models', async () => {
+    const net = fakeNet({ data: [{ id: 'llm' }] });
     const catalog = new ModelCatalog({ fetch: net.fetch, log: quietLogger });
-    const found = await catalog.refresh(entry({ type: 'llamacpp', models: ['llm'] }));
-    expect(found.detail).toBe('no HTTP protocol');
+    const found = await catalog.refresh(entry({ type: 'llamacpp' }));
+    expect(found.detail).toBe('1 models');
     expect(found.models.map((model) => model.id)).toEqual(['llm']);
-    expect(net.calls).toEqual([]);
+    expect(found.models[0]?.tasks).toEqual(['embeddings', 'rerank']);
+    expect(net.calls.some((call) => /\/v1\/models$/.test(call.url))).toBe(true);
   });
 });
 

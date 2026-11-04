@@ -6,8 +6,8 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Logger } from 'cortico/core/types.ts';
 import { ServiceError, errorMessage } from '../errors.ts';
 import type {
-  AudioFormat, GatewayPhase, ModelParameter, ServiceConfigSection, ServiceStatus, SingRequest,
-  SpeechRequest, TtsAudio,
+  AudioFormat, EmbeddingsRequest, GatewayPhase, JsonResult, ModelParameter, RerankRequest,
+  ServiceConfigSection, ServiceStatus, SingRequest, SpeechRequest, SystemOneRequest, TtsAudio,
 } from '../types.ts';
 
 const BODY_MAX = 1024 * 1024;
@@ -65,6 +65,12 @@ export interface GatewayHandlers {
   voices(query: GatewayVoiceQuery): GatewayVoiceList | Promise<GatewayVoiceList>;
   speech(request: SpeechRequest, signal: AbortSignal): Promise<TtsAudio>;
   sing(request: SingRequest, signal: AbortSignal): Promise<TtsAudio>;
+  /** 可选;没有实现时 `POST /v1/systemone` 回 501。 */
+  systemone?(request: SystemOneRequest, signal: AbortSignal): Promise<JsonResult>;
+  /** 可选;没有实现时 `POST /v1/embeddings` 回 501。 */
+  embeddings?(request: EmbeddingsRequest, signal: AbortSignal): Promise<JsonResult>;
+  /** 可选;没有实现时 `POST /v1/rerank` 回 501。 */
+  rerank?(request: RerankRequest, signal: AbortSignal): Promise<JsonResult>;
 }
 
 export interface GatewayOptions {
@@ -257,9 +263,59 @@ function singRequestOf(body: Record<string, unknown>): SingRequest {
   return request;
 }
 
+/** `model` 缺失时为空;其余字段原样保留在 `body` 里,交给适配器转发。 */
+function systemoneRequestOf(body: Record<string, unknown>): SystemOneRequest {
+  const model = textField(body.model, 'model', MODEL_MAX, false);
+  return {
+    ...(model ? { model } : {}),
+    body,
+  };
+}
+
+function embeddingsRequestOf(body: Record<string, unknown>): EmbeddingsRequest {
+  const model = textField(body.model, 'model', MODEL_MAX, false);
+  const input = body.input;
+  if (input === undefined || input === null) {
+    throw ServiceError.invalid('input is required', 'input');
+  }
+  if (typeof input !== 'string' && !Array.isArray(input)) {
+    throw ServiceError.invalid('input must be a string or an array', 'input');
+  }
+  const dimensions = numberField(body.dimensions, 'dimensions');
+  if (dimensions !== undefined && !Number.isInteger(dimensions)) {
+    throw ServiceError.invalid('dimensions must be a positive integer', 'dimensions');
+  }
+  return {
+    ...(model ? { model } : {}),
+    input,
+    ...(dimensions !== undefined ? { dimensions } : {}),
+    body,
+  };
+}
+
+function rerankRequestOf(body: Record<string, unknown>): RerankRequest {
+  const model = textField(body.model, 'model', MODEL_MAX, false);
+  const query = textField(body.query, 'query', INPUT_MAX, true)!;
+  const documents = body.documents;
+  if (!Array.isArray(documents) || documents.length === 0) {
+    throw ServiceError.invalid('documents must be a non-empty array', 'documents');
+  }
+  const topN = numberField(body.top_n, 'top_n');
+  if (topN !== undefined && !Number.isInteger(topN)) {
+    throw ServiceError.invalid('top_n must be a positive integer', 'top_n');
+  }
+  return {
+    ...(model ? { model } : {}),
+    query,
+    documents,
+    ...(topN !== undefined ? { top_n: topN } : {}),
+    body,
+  };
+}
+
 function writeJson(res: ServerResponse, status: number, body: unknown): void {
   if (res.destroyed || res.writableEnded) return;
-  const text = JSON.stringify(body);
+  const text = JSON.stringify(body) ?? 'null';
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'content-length': Buffer.byteLength(text),
@@ -328,6 +384,21 @@ export function startGateway(opts: GatewayOptions): Promise<GatewayHandle> {
     return opts.allowQueryToken && url.searchParams.get('token') === token;
   };
 
+  /** 连接断开时取消上游请求;回应已经写完则不动。 */
+  const withClientAbort = async <T>(
+    res: ServerResponse,
+    run: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> => {
+    const ctrl = new AbortController();
+    const onClose = (): void => { if (!res.writableFinished) ctrl.abort(new Error('client disconnected')); };
+    res.on('close', onClose);
+    try {
+      return await run(ctrl.signal);
+    } finally {
+      res.off('close', onClose);
+    }
+  };
+
   const run = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`);
     const method = req.method ?? 'GET';
@@ -360,26 +431,36 @@ export function startGateway(opts: GatewayOptions): Promise<GatewayHandle> {
     }
     if (method === 'POST' && path === '/v1/audio/speech') {
       const request = speechRequestOf(await readJson(req));
-      const ctrl = new AbortController();
-      const onClose = (): void => { if (!res.writableFinished) ctrl.abort(new Error('client disconnected')); };
-      res.on('close', onClose);
-      try {
-        writeAudio(res, await opts.handlers.speech(request, ctrl.signal));
-      } finally {
-        res.off('close', onClose);
-      }
+      writeAudio(res, await withClientAbort(res, (signal) => opts.handlers.speech(request, signal)));
       return;
     }
     if (method === 'POST' && path === '/v1/audio/sing') {
       const request = singRequestOf(await readJson(req));
-      const ctrl = new AbortController();
-      const onClose = (): void => { if (!res.writableFinished) ctrl.abort(new Error('client disconnected')); };
-      res.on('close', onClose);
-      try {
-        writeAudio(res, await opts.handlers.sing(request, ctrl.signal));
-      } finally {
-        res.off('close', onClose);
-      }
+      writeAudio(res, await withClientAbort(res, (signal) => opts.handlers.sing(request, signal)));
+      return;
+    }
+    if (method === 'POST' && path === '/v1/systemone') {
+      const request = systemoneRequestOf(await readJson(req));
+      const handler = opts.handlers.systemone;
+      if (!handler) throw ServiceError.unsupported('systemone is not supported by this World');
+      const result = await withClientAbort(res, (signal) => handler(request, signal));
+      writeJson(res, result.status, result.body);
+      return;
+    }
+    if (method === 'POST' && path === '/v1/embeddings') {
+      const request = embeddingsRequestOf(await readJson(req));
+      const handler = opts.handlers.embeddings;
+      if (!handler) throw ServiceError.unsupported('embeddings are not supported by this World');
+      const result = await withClientAbort(res, (signal) => handler(request, signal));
+      writeJson(res, result.status, result.body);
+      return;
+    }
+    if (method === 'POST' && path === '/v1/rerank') {
+      const request = rerankRequestOf(await readJson(req));
+      const handler = opts.handlers.rerank;
+      if (!handler) throw ServiceError.unsupported('rerank is not supported by this World');
+      const result = await withClientAbort(res, (signal) => handler(request, signal));
+      writeJson(res, result.status, result.body);
       return;
     }
     throw ServiceError.notfound(`no such route: ${method} ${url.pathname}`);

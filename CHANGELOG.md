@@ -1,3 +1,13 @@
+## 0.5.0
+
+- 新增三条 JSON 网关路由：`POST /v1/systemone`（TypeSafe Jev wire format，原样转发到 `systemone` 条目）、`POST /v1/embeddings` 与 `POST /v1/rerank`（转发到 `llamacpp` 条目）。
+- `protocolOf` 为 `systemone` / `llamacpp` 返回真正的 HTTP 协议，不再把 systemone 当 OpenAI 兼容预设、也不再让 llamacpp 只托管进程。
+- 新增 `JsonResult` / `SystemOneRequest` / `EmbeddingsRequest` / `RerankRequest` 与 `JsonRequest` 适配器形状；Bearer 仍取 `entry.secretName`，超时/取消/错误映射沿用 `timedFetch`。
+- llamacpp 上游 rerank 返回 404/405/501 时映射为 501 `unsupported`；没有对应条目时返回 503。
+- systemone 条目探活优先 `/health`，404 时回退 `/v1/models`；目录发现把 systemone 标为 chat、llamacpp 标为 embeddings/rerank，不再误标 TTS。
+- 新增 23 个测试，服务包 11 个文件 158 个测试全绿；typecheck、build:webui、smoke:webui、check:extension 通过。
+- 版本按新增路由升 minor。
+
 ## 0.4.3
 
 - 服务页左栏改为吸顶：右侧配置滚动时，「+ 新建服务」与服务卡片列表保持可见；卡片过多时列表自己滚动。

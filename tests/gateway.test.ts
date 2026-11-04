@@ -4,7 +4,9 @@ import {
   gatewayAuthError, isLoopbackHost, startGateway, type GatewayHandlers, type GatewayHandle,
   type GatewayOptions,
 } from '../src/gateway/server.ts';
-import type { SpeechRequest, SingRequest } from '../src/types.ts';
+import type {
+  EmbeddingsRequest, RerankRequest, SingRequest, SpeechRequest, SystemOneRequest,
+} from '../src/types.ts';
 import { quietLogger } from './helpers/quiet.ts';
 import { wavBytes } from './helpers/wav.ts';
 
@@ -214,6 +216,164 @@ describe('gateway routes', () => {
       });
       expect(llm.status).toBe(404);
     }
+  });
+});
+
+describe('gateway JSON routes', () => {
+  it('POST /v1/systemone 原样交给 handler 并保留状态与正文', async () => {
+    let seen: SystemOneRequest | undefined;
+    const body = {
+      model: 'sys-1',
+      messages: [{ role: 'user', content: 'hello' }],
+      temperature: 0.2,
+    };
+    const { base } = await gateway({
+      systemone: async (request) => {
+        seen = request;
+        return { status: 201, body: { ok: true } };
+      },
+    });
+    const res = await fetch(`${base}/v1/systemone`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    expect(res.status).toBe(201);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(seen).toEqual({ model: 'sys-1', body });
+  });
+
+  it('POST /v1/embeddings 解析字段并保留原始 body', async () => {
+    let seen: EmbeddingsRequest | undefined;
+    const body = { model: 'embed-1', input: ['alpha', 'beta'], dimensions: 8, extra: 'kept' };
+    const { base } = await gateway({
+      embeddings: async (request) => {
+        seen = request;
+        return { status: 200, body: { object: 'list', data: [] } };
+      },
+    });
+    const res = await fetch(`${base}/v1/embeddings`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ object: 'list', data: [] });
+    expect(seen).toEqual({
+      model: 'embed-1',
+      input: ['alpha', 'beta'],
+      dimensions: 8,
+      body,
+    });
+  });
+
+  it('POST /v1/rerank 解析字段并保留原始 body', async () => {
+    let seen: RerankRequest | undefined;
+    const body = {
+      model: 'rerank-1',
+      query: '  what is cortico  ',
+      documents: ['a bot harness', 'a weather service'],
+      top_n: 1,
+    };
+    const { base } = await gateway({
+      rerank: async (request) => {
+        seen = request;
+        return { status: 200, body: { results: [{ index: 1, relevance_score: 0.9 }] } };
+      },
+    });
+    const res = await fetch(`${base}/v1/rerank`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    expect(res.status).toBe(200);
+    expect(seen).toEqual({
+      model: 'rerank-1',
+      query: 'what is cortico',
+      documents: ['a bot harness', 'a weather service'],
+      top_n: 1,
+      body,
+    });
+  });
+
+  it('缺少 handler 时三个路由都回 501 unsupported', async () => {
+    const { base } = await gateway();
+    for (const [path, body] of [
+      ['/v1/systemone', {}],
+      ['/v1/embeddings', { input: 'hi' }],
+      ['/v1/rerank', { query: 'q', documents: ['a'] }],
+    ] as const) {
+      const res = await fetch(`${base}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      expect(res.status).toBe(501);
+      expect(await errorOf(res)).toMatchObject({
+        type: 'invalid_request_error',
+        code: 'unsupported',
+      });
+    }
+  });
+
+  it('新的 JSON 路由仍要求令牌', async () => {
+    const ok = async (): Promise<{ status: number; body: unknown }> => ({ status: 200, body: { ok: true } });
+    const { base } = await gateway({
+      systemone: ok,
+      embeddings: ok,
+      rerank: ok,
+    }, { token: 'sekret', tokenRequired: true });
+    for (const [path, body] of [
+      ['/v1/systemone', {}],
+      ['/v1/embeddings', { input: 'hi' }],
+      ['/v1/rerank', { query: 'q', documents: ['a'] }],
+    ] as const) {
+      const denied = await fetch(`${base}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      expect(denied.status).toBe(401);
+      const allowed = await fetch(`${base}${path}`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          Authorization: 'Bearer sekret',
+        },
+        body: JSON.stringify(body),
+      });
+      expect(allowed.status).toBe(200);
+    }
+  });
+
+  it('JSON 路由校验对象与必填字段', async () => {
+    const { base } = await gateway({
+      systemone: async () => ({ status: 200, body: {} }),
+      embeddings: async () => ({ status: 200, body: {} }),
+      rerank: async () => ({ status: 200, body: {} }),
+    });
+    const notObject = await fetch(`${base}/v1/systemone`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '[]',
+    });
+    expect(notObject.status).toBe(400);
+
+    const noInput = await fetch(`${base}/v1/embeddings`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'embed-1' }),
+    });
+    expect(noInput.status).toBe(400);
+    expect(await errorOf(noInput)).toMatchObject({ param: 'input' });
+
+    const noDocuments = await fetch(`${base}/v1/rerank`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ query: 'q' }),
+    });
+    expect(noDocuments.status).toBe(400);
+    expect(await errorOf(noDocuments)).toMatchObject({ param: 'documents' });
   });
 });
 
