@@ -18,7 +18,7 @@ const MAX_MODEL = 200;
 const MAX_MODELS = 200;
 const MAX_OPTIONS_BYTES = 64 * 1024;
 /** 已知模型任务；拼错时不静默变成无人接的条目。 */
-const SERVICE_TASKS = new Set(['tts', 'sing', 'systemone', 'embeddings', 'rerank']);
+const SERVICE_TASKS = new Set(['tts', 'sing', 'systemone', 'embeddings', 'rerank', 'chat']);
 
 function invalid(message: string, param?: string): ServiceError {
   return ServiceError.invalid(message, param);
@@ -180,7 +180,7 @@ export function normalizeEntry(input: unknown, base?: ServiceEntry): ServiceEntr
     MAX_NAME,
     true,
   )!;
-  const type = input.type === undefined && base ? base.type : typeOf(input.type ?? 'custom');
+  const type = input.type === undefined && base ? base.type : typeOf(input.type ?? 'openai');
   const endpoint = input.endpoint === undefined && base
     ? base.endpoint
     : endpointOf(input.endpoint);
@@ -191,7 +191,7 @@ export function normalizeEntry(input: unknown, base?: ServiceEntry): ServiceEntr
     type,
     enabled: flag(input, 'enabled', base?.enabled ?? true),
     endpoint,
-    // systemone 是外部 Jev 端点；本地 StartLux 用 llamacpp 条目。创建时默认不托管。
+    // systemone 是外部端点，默认只探活；本地 StartLux Decision 用 startlux 条目。
     manage: flag(input, 'manage', base?.manage ?? type !== 'systemone'),
     autoStart: flag(input, 'autoStart', base?.autoStart ?? true),
     restartOnExit: flag(input, 'restartOnExit', base?.restartOnExit ?? true),
@@ -218,10 +218,17 @@ export function normalizeEntry(input: unknown, base?: ServiceEntry): ServiceEntr
       if (!SERVICE_TASKS.has(task)) throw invalid(`unknown model task: ${task}`, 'tasks');
       if (!unique.includes(task)) unique.push(task);
     }
+    if (type === 'llamacpp' && unique.includes('systemone')) {
+      throw invalid('llama.cpp no longer hosts systemone; add a StartLux Decision service instead', 'tasks');
+    }
     entry.tasks = unique;
   }
   const options = 'options' in input ? jsonObjectOf(input.options, 'options', MAX_OPTIONS_BYTES) : base?.options;
   if (options !== undefined) entry.options = options;
+
+  if (type === 'llamacpp' && entry.options?.launchMode === 'single' && (entry.models?.length ?? 0) > 1) {
+    throw invalid('single-model llama.cpp takes exactly one model', 'models');
+  }
 
   return entry;
 }

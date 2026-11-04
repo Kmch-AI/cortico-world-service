@@ -116,7 +116,7 @@ describe('ModelCatalog discovery', () => {
     expect(catalog.get('svc')?.stale).toBe(true);
   });
 
-  it('openai/custom/sing 条目显式 models 时不再请求 /v1/models', async () => {
+  it('openai/sing 条目显式 models 时不再请求 /v1/models', async () => {
     const net = fakeNet({ data: [{ id: 'should-not-appear' }] });
     const catalog = new ModelCatalog({ fetch: net.fetch, log: quietLogger });
     const found = await catalog.refresh(entry({ type: 'openai', models: ['alpha', 'beta'] }));
@@ -134,10 +134,10 @@ describe('ModelCatalog discovery', () => {
     expect(net.calls.some((call) => /\/v1\/models$/.test(call.url))).toBe(true);
   });
 
-  it('llamacpp 条目的 tasks 覆盖模型目录，StartLux 标成 systemone', async () => {
+  it('StartLux Decision 条目的默认任务是 systemone', async () => {
     const net = fakeNet({ data: [{ id: 'StartLux-Decision-v1.1-0.8B-Instant' }] });
     const catalog = new ModelCatalog({ fetch: net.fetch, log: quietLogger });
-    const found = await catalog.refresh(entry({ type: 'llamacpp', tasks: ['systemone'] }));
+    const found = await catalog.refresh(entry({ type: 'startlux' }));
     expect(found.models[0]?.tasks).toEqual(['systemone']);
   });
 

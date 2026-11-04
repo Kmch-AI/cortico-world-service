@@ -2,11 +2,13 @@
  * 服务 World:托管本机推理服务进程,并在同一组服务条目上开一条 OpenAI 形状的语音网关。
  * 不合成策略、不播放、不排队、不给模型工具;其他 World 经 HTTP 连网关,包之间互不 import。
  */
+import { readdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { Language } from 'cortico/core/language.ts';
 import type { Logger, ToolDef, World, WorldHost, WorldLamp, WorldWebUiDecl } from 'cortico/core/types.ts';
 import { nullLogger, nowIso } from 'cortico/core/util.ts';
 import { SERVICE_ID, SERVICE_VERSION, serviceText } from './config.ts';
-import { serviceIdFor, systemoneEndpointOf, tasksOfEntry } from './entry.ts';
+import { serviceIdFor, tasksOfEntry } from './entry.ts';
 import { ServiceError, errorMessage } from './errors.ts';
 import {
   gatewayAuthError, isLoopbackHost, startGateway, type GatewayHandle, type GatewayHandlers,
@@ -275,6 +277,7 @@ export class ServiceWorld implements World {
       case 'restart': return this.controlService('restart', args[0]);
       case 'probe': return this.controlService('probe', args[0]);
       case 'discover': return this.discoverServices(args);
+      case 'modelFiles': return this.panelModelFiles(args[0]);
       default: throw new Error(`unknown method: services.${method}`);
     }
   }
@@ -340,6 +343,41 @@ export class ServiceWorld implements World {
       ? Math.min(MAX_LOG_LINES, Math.max(1, Math.floor(requested)))
       : DEFAULT_LOG_LINES;
     return { id, lines, text: await this.manager.logs(id, lines) };
+  }
+
+  /**
+   * 读取 GGUF 目录下的模型文件名，给面板的多选/单选。只列 `.gguf`，最多 1000 个，
+   * 子目录最多 4 层；相对路径去掉扩展名，和 llama-server 的模型名一致。
+   */
+  private async panelModelFiles(dirArg: unknown): Promise<string[]> {
+    const dir = typeof dirArg === 'string' ? dirArg.trim() : '';
+    if (!dir) return [];
+    if (dir.length > 2048) throw ServiceError.invalid('directory path is too long', 'dir');
+    if (/[\u0000-\u001f\u007f]/.test(dir)) {
+      throw ServiceError.invalid('directory path must not contain control characters', 'dir');
+    }
+    const files: string[] = [];
+    const walk = async (base: string, prefix: string, depth: number): Promise<void> => {
+      if (depth > 4 || files.length >= 1000) return;
+      let items;
+      try {
+        items = await readdir(base, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const item of items) {
+        if (files.length >= 1000) break;
+        if (item.isDirectory()) {
+          if (item.name.startsWith('.')) continue;
+          await walk(join(base, item.name), `${prefix}${item.name}/`, depth + 1);
+          continue;
+        }
+        if (!item.isFile() || !/\.gguf$/i.test(item.name)) continue;
+        files.push(`${prefix}${item.name}`.replace(/\.gguf$/i, ''));
+      }
+    };
+    await walk(dir, '', 1);
+    return files.sort((a, b) => a.localeCompare(b, 'en'));
   }
 
   private async addService(input: unknown): Promise<PanelServiceEntry> {
@@ -889,24 +927,13 @@ export class ServiceWorld implements World {
     if (!status || status.phase !== 'online') {
       throw ServiceError.unavailable(`service ${entry.id} is not ready`);
     }
-    // 外部 systemone 用条目自己的端点；llama.cpp 托管的 StartLux 用伴生 startlux-decide。
-    const companionSecret = typeof entry.options?.systemoneSecretName === 'string'
-      ? entry.options.systemoneSecretName.trim()
-      : '';
-    const target: ServiceEntry = entry.type === 'systemone'
-      ? entry
-      : {
-        ...entry,
-        type: 'systemone',
-        endpoint: systemoneEndpointOf(entry),
-        ...(companionSecret ? { secretName: companionSecret } : {}),
-      };
-    const adapter = adapterOf(target);
+    // 外部 SystemOne 与本地 StartLux Decision 都用自己的端点提供 /v1/systemone。
+    const adapter = adapterOf(entry);
     if (!adapter.systemone) {
       throw ServiceError.unsupported(`service ${entry.id} does not support systemone`);
     }
     const call = adapter.systemone;
-    return this.jsonCall('systemone', entry, () => call(this.jsonRequest(target, request.body, signal)));
+    return this.jsonCall('systemone', entry, () => call(this.jsonRequest(entry, request.body, signal)));
   }
 
   private async embeddings(request: EmbeddingsRequest, signal: AbortSignal): Promise<JsonResult> {

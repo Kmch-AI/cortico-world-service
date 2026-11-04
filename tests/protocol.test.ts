@@ -213,7 +213,7 @@ describe('custom protocol', () => {
     }));
     const res = await customProtocol.speech(request({
       entry: entry({
-        type: 'custom',
+        type: 'openai',
         endpoint: `${server.url}/custom/tts`,
         secretName: 'UPSTREAM_TOKEN',
         options: {
@@ -243,7 +243,7 @@ describe('custom protocol', () => {
     });
     const res = await customProtocol.speech(request({
       entry: entry({
-        type: 'custom',
+        type: 'openai',
         endpoint: `${server.url}/custom`,
         options: { response: 'url', audioPath: 'result.url' },
       }),

@@ -8,8 +8,9 @@ export type AudiocppBackend = Backend;
 /**
  * 服务类型：启动预设与条目自身端点的 HTTP 方言，见 `protocolOf`。
  * 它不是路由能力；`/v1/systemone`、`/v1/embeddings`、`/v1/rerank` 按 `ServiceEntry.tasks` 选条目。
+ * `startlux` 是本地 StartLux Decision 服务；`systemone` 是外部 SystemOne 端点。
  */
-export type ServiceType = 'audiocpp' | 'openai' | 'sing' | 'llamacpp' | 'systemone' | 'svc' | 'custom';
+export type ServiceType = 'audiocpp' | 'sing' | 'openai' | 'llamacpp' | 'startlux' | 'systemone';
 
 /** HTTP 方言。`none` 表示只托管进程,不代理请求(保留给未来没有 HTTP 端点的类型)。 */
 export type ServiceProtocol = 'audiocpp' | 'openai' | 'custom' | 'sing' | 'systemone' | 'llamacpp' | 'none';
@@ -44,7 +45,7 @@ export interface ServiceEntry {
   models?: string[];
   /**
    * 该模型承载的任务；空 = 按 type 推导。`systemone` 与 `embeddings` / `rerank` 同级。
-   * 一个条目就是一个模型部署，llama.cpp 条目可以用 `['systemone']` 表示 StartLux。
+   * 一个条目就是一个模型部署；StartLux Decision 是独立条目，不再挂在 llama.cpp 条目下。
    */
   tasks?: string[];
   /** 该服务的默认 options。 */
@@ -61,8 +62,6 @@ export interface ServiceStatus {
   external: boolean;
   managed: boolean;
   pid: number | null;
-  /** 伴生进程 PID；llama.cpp 条目托管 StartLux 时是 startlux-decide。 */
-  companionPid?: number | null;
   /** 该条目的有效模型任务（显式 tasks 或类型默认）。 */
   tasks: string[];
   models: number;

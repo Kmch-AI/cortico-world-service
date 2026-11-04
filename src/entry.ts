@@ -5,15 +5,17 @@
 import type { ServiceEntry, ServiceProtocol, ServiceType } from './types.ts';
 
 export const DEFAULT_HOST = '127.0.0.1';
-const DEFAULT_PORTS: Partial<Record<ServiceType, number>> = {
+/** 含 0.8 及更早的旧类型,旧配置仍能取到原来的默认端口。 */
+const DEFAULT_PORTS: Record<string, number> = {
   audiocpp: 8080,
   sing: 9882,
   svc: 9882,
 };
 /** 本地预设端口;只在回环地址补齐,外部域名仍按 http/https 取 80/443。 */
-const LOOPBACK_PORTS: Partial<Record<ServiceType, number>> = {
+const LOOPBACK_PORTS: Record<string, number> = {
   llamacpp: 8081,
-  // 8090 是 Cortico 内置 llama.cpp 供应商的默认端口；StartLux 伴生避开它。
+  // StartLux Decision 与外部 SystemOne 的本地默认端口。
+  startlux: 8091,
   systemone: 8091,
 };
 const SCHEME_PORTS: Record<string, number> = { 'http:': 80, 'https:': 443 };
@@ -37,16 +39,18 @@ function defaultPort(type: ServiceType, protocol: string, hostname: string): num
   return DEFAULT_PORTS[type] ?? SCHEME_PORTS[protocol] ?? 80;
 }
 
-/** 服务类型决定 HTTP 方言。 */
+/** 服务类型决定 HTTP 方言。旧配置里的 `svc` / `custom` 仍按原方言处理。 */
 export function protocolOf(entryOrType: TypeArg): ServiceProtocol {
-  switch (typeOf(entryOrType)) {
+  switch (typeOf(entryOrType) as string) {
     case 'audiocpp': return 'audiocpp';
     case 'openai': return 'openai';
     case 'sing': return 'sing';
-    case 'svc': return 'sing';
     case 'llamacpp': return 'llamacpp';
+    case 'startlux': return 'systemone';
     case 'systemone': return 'systemone';
+    case 'svc': return 'sing';
     case 'custom': return 'custom';
+    default: return 'openai';
   }
 }
 
@@ -56,7 +60,7 @@ function hasScheme(value: string): boolean {
 
 /**
  * 归一化端点:无协议按 http;缺主机用 127.0.0.1;缺端口按类型补
- * (audiocpp 8080、sing/svc 9882;llamacpp/systemone 只在回环地址补 8081/8091,
+ * (audiocpp 8080、sing 9882;llamacpp/startlux/systemone 只在回环地址补 8081/8091,
  * 外部域名按协议 80/443)。保留路径,去掉末尾斜杠。
  */
 export function endpointUrl(entry: EndpointLike): string {
@@ -92,12 +96,14 @@ export function hostPort(entry: EndpointLike): { host: string; port: number } {
  */
 export function tasksOfEntry(entry: Pick<ServiceEntry, 'type' | 'tasks'>): string[] {
   if (entry.tasks?.length) return entry.tasks;
-  switch (entry.type) {
+  switch (entry.type as string) {
     case 'sing':
     case 'svc':
       return ['sing'];
     case 'llamacpp': return ['embeddings', 'rerank'];
-    case 'systemone': return ['systemone'];
+    case 'startlux':
+    case 'systemone':
+      return ['systemone'];
     case 'audiocpp':
     case 'openai':
     case 'custom':
@@ -107,69 +113,24 @@ export function tasksOfEntry(entry: Pick<ServiceEntry, 'type' | 'tasks'>): strin
   }
 }
 
-/** llama.cpp 条目是否承载 StartLux 的 `systemone` 任务。 */
-export function isStartLuxEntry(entry: Pick<ServiceEntry, 'type' | 'tasks'>): boolean {
-  return entry.type === 'llamacpp' && tasksOfEntry(entry).includes('systemone');
-}
-
-/** llama.cpp 的启动方式：llama.app 的 serve、ggml-org 的路由模式、或经典单模型。 */
-export type LlamacppLaunchMode = 'serve' | 'router' | 'single';
+/** llama.cpp 的启动方式：多模型用 `--models-dir`，单模型用 `-m`。 */
+export type LlamacppLaunchMode = 'router' | 'single';
 
 /**
  * 解析 llama.cpp 条目的启动方式。显式 `options.launchMode` 优先；旧配置按 args 推断：
- * 带 `serve` 的是 llama.app，带 `--models-dir` 的是路由模式，带 `-m` / `--model` 的是单模型。
- * 空配置默认 serve（llama.app 的现代 CLI）。StartLux 固定单模型。
+ * 带 `--models-dir` 的是多模型，带 `-m` / `--model` 的是单模型。
+ * 0.8 及更早的 `serve` 与空配置都按多模型处理。
  */
 export function llamacppLaunchMode(
-  entry: Pick<ServiceEntry, 'type' | 'tasks' | 'args' | 'options'>,
+  entry: Pick<ServiceEntry, 'type' | 'args' | 'options'>,
 ): LlamacppLaunchMode {
-  if (entry.type !== 'llamacpp' || isStartLuxEntry(entry)) return 'single';
+  if (entry.type !== 'llamacpp') return 'single';
   const explicit = entry.options?.launchMode;
-  if (explicit === 'serve' || explicit === 'router' || explicit === 'single') return explicit;
+  if (explicit === 'router' || explicit === 'single') return explicit;
   const args = entry.args ?? '';
-  if (/(^|\s)serve(\s|$)/.test(args)) return 'serve';
   if (/(^|\s)--models-dir(\s|=)/.test(args)) return 'router';
   if (/(^|\s)(-m|--model)(\s|=)/.test(args)) return 'single';
-  const modelsDir = entry.options?.modelsDir;
-  if (typeof modelsDir === 'string' && modelsDir.trim()) return 'serve';
-  return 'serve';
-}
-
-/**
- * `systemone` 任务的上游地址。外部 systemone 条目用自己的 endpoint；
- * llama.cpp 托管的 StartLux 用伴生 startlux-decide，默认与本机 endpoint 同主机、8091 端口。
- */
-export function systemoneEndpointOf(
-  entry: Pick<ServiceEntry, 'type' | 'endpoint' | 'options'>,
-): string {
-  if (entry.type === 'systemone') return endpointUrl(entry);
-  const configured = entry.options?.systemoneUrl;
-  if (typeof configured === 'string' && configured.trim()) {
-    return endpointUrl({ type: 'systemone', endpoint: configured.trim() });
-  }
-  const primary = hostPort(entry);
-  const rawPort = entry.options?.systemonePort;
-  const port = typeof rawPort === 'number' && Number.isInteger(rawPort)
-    && rawPort >= 1 && rawPort <= 65535 ? rawPort : 8091;
-  const host = primary.host === '0.0.0.0' || primary.host === '::' ? '127.0.0.1' : primary.host;
-  const address = host.includes(':') ? `[${host}]` : host;
-  return `http://${address}:${port}`;
-}
-
-/** 伴生 startlux-decide 的 host/port，用于启动参数。 */
-export function systemoneHostPort(
-  entry: Pick<ServiceEntry, 'type' | 'endpoint' | 'options'>,
-): { host: string; port: number } {
-  const url = new URL(systemoneEndpointOf(entry));
-  return {
-    host: url.hostname.replace(/^\[|\]$/g, ''),
-    port: url.port ? Number(url.port) : 8091,
-  };
-}
-
-/** llama-server 的 origin；`--llamacpp-url` 和健康探针只要 scheme/host/port。 */
-export function primaryOrigin(entry: EndpointLike): string {
-  return new URL(endpointUrl(entry)).origin;
+  return 'router';
 }
 
 /** 只有托管进程、没有 HTTP 协议的条目返回 null。 */

@@ -1,6 +1,24 @@
-## 0.8.0
+## 0.9.0
+
+- 服务类型表去掉 `svc` / `custom`，新增 `startlux`（StartLux Decision）。类型显示名改为 `audiocpp` / `Sing` / `OpenAI` / `llama.cpp` / `StartLux Decision` / `SystemOne`，下拉顺序按用途分组。
+- StartLux 不再挂在 `llamacpp` 条目下：删掉伴生 `startlux-decide`、`systemonePort`、`startluxDir` / `startluxBinary` / `startluxArgs`、`systemoneUrl` / `systemoneSecretName` 与两进程编排。`llamacpp` 只托管 `llama-server` 与 GGUF。
+- 新类型 `startlux` 启动 `<serverDir>/.venv/Scripts/startlux-decide(.exe)`（也可手填 `binary`），工作目录是仓库根目录；直接运行 venv 入口即可，不需要先 activate。参数 `serve --model <options.modelDir> --backend llamacpp --llamacpp-url <上游> --host --port`，可选 `--think-mode` / `--gate`，并设 `STARTLUX_LLAMACPP_BIDIR=server`。条目地址就是 `/v1/systemone` 端口。
+- StartLux Decision 的 llama.cpp 上游用 `options.llamacppService`（条目 id，地址取该条目 endpoint）或 `options.llamacppUrl`；两者必须有一个。`options.modelDir` 必填。
+- `llamacpp` 去掉 `llama serve`：只剩 `router`（多模型，`--models-dir`）与 `single`（单模型，`-m`）。旧 `launchMode: 'serve'` 与空配置按多模型处理，残留的 `serve` 子命令会被清掉。
+- 面板的 llama.cpp 模型选择改为读取 GGUF 目录：多模型多选，单模型单选；选中的模型写进 `models`，单模型自动补 `-m <modelsDir>/<模型>.gguf`。服务端新增 `modelFiles` 面板方法，只列 `.gguf`（最多 1000 个、4 层子目录），返回去掉扩展名的相对路径。
+- 任务新增 `chat`（只提供模型，不加 `--embeddings` / `--reranking`）；`llamacpp` 条目再带 `systemone` 任务会在启动前提示迁移到 StartLux Decision。
+- `/v1/systemone` 直接把请求转发到 `startlux` / `systemone` 条目自己的端点，不再做伴生端点改写。
+- 服务面板：卡片类型药丸用显示名；模型药丸多选时显示首个 `+N`；StartLux Decision 增加模型目录、llama.cpp 服务/地址、思考模式/阈值、Instant 与 venv 说明；删除伴生 PID 行。
+- 服务包 11 个文件 182 个测试全绿；typecheck、build:webui、smoke:webui 通过。
+- 版本按类型与启动方式变更升 minor。
+
+## 0.8.1
 
 - 扩展介绍统一为中文的「定位 + 能力 + 边界」格式；npm `description`、市场中文介绍与 README 首段同步；标签保持 `voice`、`local`、`external-setup`、`experimental`。
+- 只改元数据，无运行时变更；0.8.0 已发布 npm，按版本规则升 patch。
+
+## 0.8.0
+
 - llama.cpp 增加三种启动方式：`serve`（llama.app 的 `llama serve`）、`router`（ggml-org / Cortico 内置的 `llama-server --models-dir`）与 `single`（`-m` 单模型）。`options.launchMode` 显式选择；旧配置按 `args` 推断，空配置默认 `serve`。
 - `serve` 模式默认可执行文件改为 `llama(.exe)`，参数 `serve --host --port --models-dir`，任务按 `--embedding` / `--rerank` 开端点；`router` 保持 `llama-server`，任务按 `--embeddings` / `--reranking`。
 - 新增 `options.modelsDir`、`cacheDir`、`contextSize`、`nGpuLayers`、`parallel`；`cacheDir` 设为 `LLAMA_CACHE`，其余分别映射 `--models-dir`、`-c`、`-ngl`、`--parallel`。非 StartLux 条目现在也会补 `--host` / `--port`，不再依赖操作者在 `args` 里重复。

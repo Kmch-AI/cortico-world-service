@@ -24,7 +24,7 @@ function services(): ServiceEntry[] {
     serviceEntry({
       id: 'alpha',
       name: 'Alpha',
-      type: 'custom',
+      type: 'openai',
       endpoint: 'http://127.0.0.1:9001',
       serverDir: '',
       binary: 'C:/bin/alpha.exe',
@@ -34,7 +34,7 @@ function services(): ServiceEntry[] {
     serviceEntry({
       id: 'beta',
       name: 'Beta',
-      type: 'custom',
+      type: 'openai',
       endpoint: 'http://127.0.0.1:9002',
       serverDir: '',
       binary: 'C:/bin/beta.exe',
@@ -74,7 +74,7 @@ describe('Manager', () => {
       { ...serviceEntry({
         id: 'gamma',
         name: 'Gamma',
-        type: 'custom',
+        type: 'openai',
         endpoint: 'http://127.0.0.1:9003',
         binary: 'C:/bin/gamma.exe',
         serverDir: '',

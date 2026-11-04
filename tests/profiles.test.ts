@@ -269,8 +269,8 @@ describe('openai and custom request mapping', () => {
     expect(built.body.options).toBeUndefined();
   });
 
-  it('custom 条目默认按 custom 映射,未映射的字段不塞进去', () => {
-    const built = buildSpeech(resolveProfile(entry({ type: 'custom' })), speech({
+  it('custom profile 映射,未映射的字段不塞进去', () => {
+    const built = buildSpeech(resolveProfile(entry({ type: 'openai', modelProfile: 'custom' })), speech({
       voice: 'v', emotion: 'calm', language: 'zh', format: 'wav',
     }));
     expect(built.body).toEqual({

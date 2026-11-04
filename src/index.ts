@@ -9,7 +9,7 @@ export { ServiceWorld } from './world.ts';
 export type { ServiceWorldOptions } from './world.ts';
 export { Manager, DEFAULT_LOG_LINES, MAX_LOG_LINES } from './manager.ts';
 export type { ManagerOptions, ServiceListSource } from './manager.ts';
-export { SERVICE_ID_RE, SERVICE_TYPES } from './panel.ts';
+export { SERVICE_ID_RE, SERVICE_TYPES, SERVICE_TYPE_LABELS } from './panel.ts';
 export type {
   PanelGateway, PanelLogs, PanelModels, PanelService, PanelServiceEntry, PanelState, PanelTokenResult,
 } from './panel.ts';

@@ -1,13 +1,23 @@
 /** 服务面板与 World 经由 `invoke` 交换的数据形状;浏览器端 import type 这些声明,并直接使用 `SERVICE_TYPES`。 */
 import type {
-  GatewayPhase, ModelRecord, ServiceCatalog, ServiceEntry, ServiceStatus,
+  GatewayPhase, ModelRecord, ServiceCatalog, ServiceEntry, ServiceStatus, ServiceType,
 } from './types.ts';
 
 /** 条目的 id 在日志文件名与服务键里使用;只允许字母、数字、点、下划线与连字符。 */
 export const SERVICE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
-/** 服务类型;协议由 `protocolOf` 推导,不再单独配置。 */
-export const SERVICE_TYPES = ['audiocpp', 'openai', 'sing', 'llamacpp', 'systemone', 'svc', 'custom'] as const;
+/** 服务类型;协议由 `protocolOf` 推导,不再单独配置。顺序按页面用途分组。 */
+export const SERVICE_TYPES = ['audiocpp', 'sing', 'openai', 'llamacpp', 'startlux', 'systemone'] as const;
+
+/** 类型的显示名;配置里仍用 {@link SERVICE_TYPES} 的小写键。 */
+export const SERVICE_TYPE_LABELS: Readonly<Record<ServiceType, string>> = {
+  audiocpp: 'audiocpp',
+  sing: 'Sing',
+  openai: 'OpenAI',
+  llamacpp: 'llama.cpp',
+  startlux: 'StartLux Decision',
+  systemone: 'SystemOne',
+};
 
 /** 条目加上「令牌是否有值」;令牌值本身从不过桥。 */
 export interface PanelServiceEntry extends ServiceEntry {

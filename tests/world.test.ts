@@ -142,12 +142,12 @@ describe('service World', () => {
   it('多个服务按顺序启动,灯与徽标汇总', async () => {
     const entries = [
       serviceEntry({
-        id: 'alpha', name: 'Alpha', type: 'custom',
+        id: 'alpha', name: 'Alpha', type: 'openai',
         endpoint: 'http://127.0.0.1:9001',
         serverDir: '', binary: 'C:/bin/alpha.exe', args: '--port 9001', options: {},
       }),
       serviceEntry({
-        id: 'beta', name: 'Beta', type: 'custom',
+        id: 'beta', name: 'Beta', type: 'openai',
         endpoint: 'http://127.0.0.1:9002',
         serverDir: '', binary: 'C:/bin/beta.exe', args: '--port 9002', options: {},
       }),

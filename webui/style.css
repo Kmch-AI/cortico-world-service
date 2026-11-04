@@ -152,6 +152,29 @@
   min-width: 0;
 }
 
+.svc-models {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.svc-model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 12rem;
+  overflow-y: auto;
+}
+
+.svc-model-list .check {
+  font-size: 12.5px;
+}
+
+.svc-model-list select.field {
+  width: 100%;
+}
+
 .svc-token-row {
   display: flex;
   align-items: center;

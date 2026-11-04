@@ -90,6 +90,7 @@ function checkbox(label, opts = {}) {
   box.type = 'checkbox';
   box.checked = Boolean(opts.checked);
   if (opts.disabled) box.disabled = true;
+  if (opts.onChange) box.addEventListener('change', () => opts.onChange(box.checked));
   wrap.append(box, document.createTextNode(label));
   return {
     el: wrap,
@@ -255,7 +256,7 @@ const state = {
   },
   services: [
     service({ id: 'alpha', name: 'Alpha', type: 'audiocpp', endpoint: 'http://127.0.0.1:8080', models: ['voice-a'] }, 'online'),
-    service({ id: 'beta', name: 'Beta', type: 'custom', endpoint: 'http://127.0.0.1:9101' }, 'off', { managed: false }),
+    service({ id: 'beta', name: 'Beta', type: 'openai', endpoint: 'http://127.0.0.1:9101' }, 'off', { managed: false }),
   ],
 };
 
@@ -304,6 +305,12 @@ async function invoke(method, args = []) {
       return structuredClone(state);
     case 'logs':
       return { id: args[0], lines: 0, text: '' };
+    case 'modelFiles':
+      return [
+        'Qwen3-Embedding-0.6B-Q8_0',
+        'Qwen3-Reranker-0.6B.Q4_K_M',
+        'StartLux-Decision-v1.1-0.8B-Instant-Q8_0',
+      ];
     case 'saveGateway':
       Object.assign(state.gateway, args[0]);
       return structuredClone(state);
@@ -329,7 +336,7 @@ function makeCtx(panelId, element) {
       setConfig: async () => { throw new Error('unused'); },
       stream: () => { throw new Error('unused'); },
       interval(fn, ms) { intervals.push({ fn, ms }); return { dispose() {} }; },
-      timeout: () => ({ dispose() {} }),
+      timeout(fn) { const t = setTimeout(fn, 0); return { dispose() { clearTimeout(t); } }; },
       frame: () => ({ dispose() {} }),
       own: value => value,
       memo: { map: new Map(), get(key, fallback) { return this.map.has(key) ? this.map.get(key) : fallback; }, set(key, value) { this.map.set(key, value); } },
@@ -396,7 +403,7 @@ assert.equal(text(one('.connection-name', alpha)), 'Alpha');
 assert.equal(text(one('.kv-type .kv-v', alpha)), 'audiocpp');
 assert.equal(text(one('.kv-model .kv-v', alpha)), 'voice-a');
 assert.match(text(one('.connection-status', alpha)), /在线/);
-assert.equal(text(one('.kv-type .kv-v', card('beta', servicesRoot))), 'custom');
+assert.equal(text(one('.kv-type .kv-v', card('beta', servicesRoot))), 'OpenAI');
 assert.match(text(one('.connection-status', card('beta', servicesRoot))), /已停止/);
 assert.deepEqual(cardActions(alpha), ['停止', '重启'], 'online card offers stop/restart');
 assert.deepEqual(cardActions(card('beta', servicesRoot)), ['启动', '重启'], 'offline card offers start/restart');
@@ -411,6 +418,10 @@ assert.deepEqual(folds.map(item => item.open), [true, true, true, false], 'secti
 const labels = all('.connection-field .fieldlabel', editor).map(text);
 assert.ok(!labels.some(label => /协议|健康|health|protocol|(^|\s)id(\s|$)/i.test(label)), 'no protocol/healthPath/id inputs');
 assert.ok(all('.svc-status tr', editor).length >= 7, 'status block rows');
+
+const typeSelect = fieldControl(editor, '类型');
+assert.deepEqual([...typeSelect.options].map(item => item.value), ['audiocpp', 'sing', 'openai', 'llamacpp', 'startlux', 'systemone'], 'type order by category');
+assert.deepEqual([...typeSelect.options].map(item => text(item)), ['audiocpp', 'Sing', 'OpenAI', 'llama.cpp', 'StartLux Decision', 'SystemOne'], 'type display names');
 
 // ---------------------------------------------------------------------------
 // 轮询不重建表单;已有条目保存走 update。
@@ -460,11 +471,11 @@ assert.equal(checkControl(draftEditor, '托管进程').checked, true);
 draftType.value = 'sing';
 fire(draftType, 'change');
 assert.equal(draftEndpoint.value, 'http://127.0.0.1:9882', 'type change replaces the old default endpoint');
-assert.equal(text(one('.kv-type .kv-v', draftCard)), 'sing', 'card type pill follows the form');
+assert.equal(text(one('.kv-type .kv-v', draftCard)), 'Sing', 'card type pill follows the form');
 
 draftEndpoint.value = 'http://10.0.0.5:7000';
 fire(draftEndpoint, 'input');
-draftType.value = 'svc';
+draftType.value = 'startlux';
 fire(draftType, 'change');
 assert.equal(draftEndpoint.value, 'http://10.0.0.5:7000', 'custom endpoint survives type change');
 
@@ -487,7 +498,7 @@ assert.deepEqual(all('.svc-process', draftEditor).map(item => item.hidden), [fal
 draftType.value = 'llamacpp';
 fire(draftType, 'change');
 assert.deepEqual(all('.svc-process', draftEditor).map(item => item.hidden), [false, false, true, true, true], 'llamacpp shows process and llama launch fields only');
-assert.equal(fieldControl(draftEditor, '启动方式').value, 'serve', 'new llamacpp draft defaults to serve');
+assert.equal(fieldControl(draftEditor, '启动方式').value, 'router', 'new llamacpp draft defaults to multi-model');
 const profileField = all('.connection-field', draftEditor).find(item => text(item.querySelector('.fieldlabel')).startsWith('模型 profile'));
 assert.ok(profileField?.hidden, 'llamacpp hides the model profile');
 
@@ -527,7 +538,7 @@ assert.equal(text(one('.connection-name', liveDraft)), 'Live draft', 'draft name
 const liveModels = fieldControl(liveEditor, '模型');
 liveModels.value = 'voice-x, voice-y';
 fire(liveModels, 'input');
-assert.equal(text(one('.kv-model .kv-v', liveDraft)), 'voice-x', 'draft model pill follows input');
+assert.equal(text(one('.kv-model .kv-v', liveDraft)), 'voice-x +1', 'draft model pill follows input');
 const confirmsBeforeDiscard = confirmCalls;
 one('.connection-erase', liveDraft).click();
 await settle();
@@ -553,7 +564,7 @@ assert.ok(calls.findLast(item => item.method === 'remove'), 'card delete invokes
 assert.equal(all('.connection-card', servicesRoot).length, 2);
 
 // ---------------------------------------------------------------------------
-// llamacpp + systemone：StartLux 是模型任务，不是独立服务类型。
+// StartLux Decision：独立服务类型，启动 startlux-decide，代理 llama.cpp。
 // ---------------------------------------------------------------------------
 
 one('.connection-create > .btn', servicesRoot).click();
@@ -561,27 +572,18 @@ await settle();
 const sysEditor = one('.svc-editor', servicesRoot);
 const sysType = fieldControl(sysEditor, '类型');
 const sysEndpoint = fieldControl(sysEditor, 'API 地址');
-sysType.value = 'llamacpp';
+sysType.value = 'startlux';
 fire(sysType, 'change');
-assert.equal(sysEndpoint.value, 'http://127.0.0.1:8081', 'llamacpp default endpoint 8081');
-assert.equal(checkControl(sysEditor, '托管进程').checked, true, 'llamacpp starts managed');
-
-const sysTasks = fieldControl(sysEditor, '模型任务');
-assert.deepEqual([...sysTasks.options].map(item => item.value), ['embeddings,rerank', 'embeddings', 'rerank', 'systemone'], 'model task choices');
-const sysGroup = all('.svc-process', sysEditor).find(item => text(item).includes('StartLux 本地预设'));
-assert.ok(sysGroup?.hidden, 'StartLux preset hidden for embeddings/rerank');
-assert.deepEqual(all('.svc-process', sysEditor).map(item => item.hidden), [false, false, true, true, true], 'llamacpp embeddings shows process and llama launch fields');
-
-sysTasks.value = 'systemone';
-fire(sysTasks, 'change');
-assert.equal(sysGroup.hidden, false, 'systemone task shows the StartLux preset');
-assert.deepEqual(all('.svc-process', sysEditor).map(item => item.hidden), [false, true, false, true, true], 'StartLux shows process and preset only');
+assert.equal(sysEndpoint.value, 'http://127.0.0.1:8091', 'startlux default endpoint 8091');
+assert.equal(checkControl(sysEditor, '托管进程').checked, true, 'startlux starts managed');
+assert.deepEqual(all('.svc-process', sysEditor).map(item => item.hidden), [false, true, false, true, true], 'startlux shows process and preset only');
 
 const sysModelDir = fieldControl(sysEditor, 'StartLux 模型目录');
-const sysStartluxDir = fieldControl(sysEditor, 'StartLux 目录');
-const sysSystemonePort = fieldControl(sysEditor, 'SystemOne 端口');
+const sysService = fieldControl(sysEditor, 'llama.cpp 服务');
+const sysUrl = fieldControl(sysEditor, 'llama.cpp 地址');
 const sysThinkMode = fieldControl(sysEditor, '思考模式');
 const sysGate = fieldControl(sysEditor, '思考阈值');
+assert.deepEqual([...sysService.options].map(item => item.value), [''], 'no llama.cpp services yet');
 assert.deepEqual([...sysThinkMode.options].map(item => item.value), ['', 'auto', 'never', 'always'], 'think mode choices');
 
 const addCountBeforeSystemone = addCount;
@@ -590,15 +592,15 @@ await settle();
 assert.equal(addCount, addCountBeforeSystemone, 'missing model directory blocks save');
 assert.match(text(one('.svc-editor > .msgline', servicesRoot)), /模型目录/, 'model directory error shown');
 
-sysModelDir.value = 'D:/models/StartLux-0.8B';
+sysModelDir.value = 'D:/models/StartLux-Decision-v1.1-0.8B-Instant';
 fire(sysModelDir, 'input');
 one('.svc-editor .actions .btn.primary', servicesRoot).click();
 await settle();
-assert.equal(addCount, addCountBeforeSystemone, 'missing StartLux directory blocks save');
-assert.match(text(one('.svc-editor > .msgline', servicesRoot)), /StartLux/, 'StartLux directory error shown');
+assert.equal(addCount, addCountBeforeSystemone, 'missing llama.cpp upstream blocks save');
+assert.match(text(one('.svc-editor > .msgline', servicesRoot)), /llama\.cpp/, 'llama.cpp upstream error shown');
 
-sysStartluxDir.value = 'C:/venv/Scripts';
-fire(sysStartluxDir, 'input');
+sysUrl.value = 'http://127.0.0.1:8082';
+fire(sysUrl, 'input');
 sysGate.value = '1.5';
 fire(sysGate, 'input');
 one('.svc-editor .actions .btn.primary', servicesRoot).click();
@@ -607,10 +609,8 @@ assert.equal(addCount, addCountBeforeSystemone, 'gate above 1 blocks save');
 assert.match(text(one('.svc-editor > .msgline', servicesRoot)), /0–1/, 'gate error shown');
 
 const sysOptions = fieldControl(sysEditor, 'Options JSON');
-sysOptions.value = JSON.stringify({ extra: 'kept', modelDir: 'old', llamacppUrl: 'old' });
+sysOptions.value = JSON.stringify({ extra: 'kept', modelDir: 'old', startluxDir: 'old', systemonePort: 8090 });
 fire(sysOptions, 'input');
-sysSystemonePort.value = '8091';
-fire(sysSystemonePort, 'input');
 sysThinkMode.value = 'always';
 fire(sysThinkMode, 'change');
 sysGate.value = '0.7';
@@ -621,75 +621,111 @@ one('.svc-editor .actions .btn.primary', servicesRoot).click();
 await settle();
 const sysAdd = calls.findLast(item => item.method === 'add');
 assert.ok(sysAdd, 'StartLux draft saves');
-assert.equal(sysAdd.args[0].type, 'llamacpp');
-assert.equal(sysAdd.args[0].endpoint, 'http://127.0.0.1:8081');
-assert.deepEqual(sysAdd.args[0].tasks, ['systemone'], 'tasks systemone saved');
+assert.equal(sysAdd.args[0].type, 'startlux');
+assert.equal(sysAdd.args[0].endpoint, 'http://127.0.0.1:8091');
+assert.equal(sysAdd.args[0].tasks, null, 'startlux does not take llama.cpp tasks');
+assert.equal(sysAdd.args[0].models, null, 'startlux does not take a model list');
 assert.deepEqual(sysAdd.args[0].options, {
   extra: 'kept',
-  modelDir: 'D:/models/StartLux-0.8B',
-  startluxDir: 'C:/venv/Scripts',
-  systemonePort: 8091,
+  modelDir: 'D:/models/StartLux-Decision-v1.1-0.8B-Instant',
+  llamacppUrl: 'http://127.0.0.1:8082',
   thinkMode: 'always',
   gate: 0.7,
   instant: true,
-});
-console.log(`StartLux model/task smoke ok: options=${JSON.stringify(sysAdd.args[0].options)}`);
+}, 'startlux options replace old StartLux keys');
+console.log(`StartLux Decision smoke ok: options=${JSON.stringify(sysAdd.args[0].options)}`);
 
 // ---------------------------------------------------------------------------
-// llamacpp serve 模式：GGUF 目录、缓存与启动参数写回 options；重开保持任务标签。
+// llamacpp：多模型读目录多选，单模型只能单选；没有 serve 启动方式。
 // ---------------------------------------------------------------------------
 
 one('.connection-create > .btn', servicesRoot).click();
 await settle();
-const serveEditor = one('.svc-editor', servicesRoot);
-const serveType = fieldControl(serveEditor, '类型');
-serveType.value = 'llamacpp';
-fire(serveType, 'change');
-const serveTasks = fieldControl(serveEditor, '模型任务');
-serveTasks.value = 'embeddings,rerank';
-fire(serveTasks, 'change');
-assert.equal(fieldControl(serveEditor, '启动方式').value, 'serve', 'new llamacpp draft defaults to serve');
-const serveName = fieldControl(serveEditor, '名称');
-serveName.value = 'Embed';
-fire(serveName, 'input');
-const serveModelsDir = fieldControl(serveEditor, 'GGUF 目录');
-serveModelsDir.value = 'D:/models';
-fire(serveModelsDir, 'input');
-const serveCacheDir = fieldControl(serveEditor, '缓存目录');
-serveCacheDir.value = 'D:/cache';
-fire(serveCacheDir, 'input');
-const serveContext = fieldControl(serveEditor, '上下文长度');
-serveContext.value = '16384';
-fire(serveContext, 'input');
-const serveNgl = fieldControl(serveEditor, 'GPU 层数');
-serveNgl.value = 'all';
-fire(serveNgl, 'input');
-const serveParallel = fieldControl(serveEditor, '并行槽位');
-serveParallel.value = '4';
-fire(serveParallel, 'input');
+const llamaEditor = one('.svc-editor', servicesRoot);
+const llamaType = fieldControl(llamaEditor, '类型');
+llamaType.value = 'llamacpp';
+fire(llamaType, 'change');
+assert.equal(fieldControl(llamaEditor, 'API 地址').value, 'http://127.0.0.1:8081', 'llamacpp default endpoint 8081');
+assert.equal(checkControl(llamaEditor, '托管进程').checked, true, 'llamacpp starts managed');
+
+const llamaTasks = fieldControl(llamaEditor, '模型任务');
+assert.deepEqual([...llamaTasks.options].map(item => item.value), ['embeddings,rerank', 'embeddings', 'rerank', 'chat'], 'model task choices');
+llamaTasks.value = 'chat';
+fire(llamaTasks, 'change');
+
+const llamaMode = fieldControl(llamaEditor, '启动方式');
+assert.deepEqual([...llamaMode.options].map(item => item.value), ['router', 'single'], 'launch modes are multi or single');
+assert.equal(llamaMode.value, 'router', 'new llamacpp draft defaults to multi-model');
+assert.equal(all('.svc-process', llamaEditor).map(item => item.hidden)[1], false, 'llamacpp launch group shown');
+
+const llamaName = fieldControl(llamaEditor, '名称');
+llamaName.value = 'Llama multi';
+fire(llamaName, 'input');
+const llamaModelsDir = fieldControl(llamaEditor, 'GGUF 目录');
+llamaModelsDir.value = 'D:/models';
+fire(llamaModelsDir, 'input');
+await settle();
+const modelBoxes = all('.svc-model-list input[type="checkbox"]', llamaEditor);
+assert.equal(modelBoxes.length, 3, 'model folder scan fills the multi-select');
+modelBoxes[0].checked = true;
+fire(modelBoxes[0], 'change');
+modelBoxes[2].checked = true;
+fire(modelBoxes[2], 'change');
+const llamaCache = fieldControl(llamaEditor, '缓存目录');
+llamaCache.value = 'D:/cache';
+fire(llamaCache, 'input');
+const llamaContext = fieldControl(llamaEditor, '上下文长度');
+llamaContext.value = '16384';
+fire(llamaContext, 'input');
+const llamaNgl = fieldControl(llamaEditor, 'GPU 层数');
+llamaNgl.value = 'all';
+fire(llamaNgl, 'input');
+const llamaParallel = fieldControl(llamaEditor, '并行槽位');
+llamaParallel.value = '4';
+fire(llamaParallel, 'input');
 one('.svc-editor .actions .btn.primary', servicesRoot).click();
 await settle();
-const serveAdd = calls.findLast(item => item.method === 'add');
-assert.ok(serveAdd, 'serve draft saves');
-assert.equal(serveAdd.args[0].type, 'llamacpp');
-assert.deepEqual(serveAdd.args[0].tasks, ['embeddings', 'rerank'], 'serve tasks save');
-assert.deepEqual(serveAdd.args[0].options, {
-  launchMode: 'serve',
+const llamaAdd = calls.findLast(item => item.method === 'add');
+assert.ok(llamaAdd, 'multi-model llama.cpp saves');
+assert.equal(llamaAdd.args[0].type, 'llamacpp');
+assert.deepEqual(llamaAdd.args[0].tasks, ['chat'], 'chat task saves');
+assert.deepEqual(llamaAdd.args[0].models, [
+  'Qwen3-Embedding-0.6B-Q8_0',
+  'StartLux-Decision-v1.1-0.8B-Instant-Q8_0',
+], 'multi-select models save');
+assert.deepEqual(llamaAdd.args[0].options, {
+  launchMode: 'router',
   modelsDir: 'D:/models',
   cacheDir: 'D:/cache',
   contextSize: 16384,
   nGpuLayers: 'all',
   parallel: 4,
-}, 'serve launch options save');
-
-const savedEditor = one('.svc-editor', servicesRoot);
-const savedTasks = fieldControl(savedEditor, '模型任务');
-assert.equal(savedTasks.value, 'embeddings,rerank', 'saved tasks normalize to the preset value');
-assert.equal(text(savedTasks.selectedOptions[0]), 'Embeddings + Rerank', 'saved tasks keep the preset label');
-const savedLabels = all('.connection-field .fieldlabel', savedEditor).map(text);
+}, 'multi-model launch options save');
+assert.equal(text(one('.kv-type .kv-v', card('added-3', servicesRoot))), 'llama.cpp', 'card type uses the display label');
+assert.equal(text(one('.kv-model .kv-v', card('added-3', servicesRoot))), 'Qwen3-Embedding-0.6B-Q8_0 +1', 'card summarises multiple models');
+const savedLlama = one('.svc-editor', servicesRoot);
+assert.equal(fieldControl(savedLlama, '模型任务').value, 'chat', 'saved tasks normalize to the preset value');
+assert.equal(text(fieldControl(savedLlama, '模型任务').selectedOptions[0]), 'Chat（只提供模型）', 'saved tasks keep the preset label');
+assert.equal(all('.svc-model-list input[type="checkbox"]:checked', savedLlama).length, 2, 'saved multi-select restores');
+const savedLabels = all('.connection-field .fieldlabel', savedLlama).map(text);
 assert.ok(savedLabels.includes('API Key'), 'upstream token field is labeled API Key');
+assert.ok(savedLabels.includes('模型文件'), 'llama.cpp shows the model picker');
 assert.ok(!savedLabels.includes('上游令牌变量名'), 'old upstream token label is gone');
-console.log(`llamacpp serve smoke ok: options=${JSON.stringify(serveAdd.args[0].options)}`);
+
+const savedMode = fieldControl(savedLlama, '启动方式');
+savedMode.value = 'single';
+fire(savedMode, 'change');
+const singleSelect = fieldControl(savedLlama, '模型文件');
+assert.equal(singleSelect.tagName, 'SELECT', 'single-model uses a one-choice picker');
+singleSelect.value = 'Qwen3-Embedding-0.6B-Q8_0';
+fire(singleSelect, 'change');
+one('.svc-editor .actions .btn.primary', servicesRoot).click();
+await settle();
+const singleUpdate = calls.findLast(item => item.method === 'update');
+assert.ok(singleUpdate, 'single-model update saves');
+assert.deepEqual(singleUpdate.args[1].models, ['Qwen3-Embedding-0.6B-Q8_0'], 'single-model keeps one model');
+assert.equal(singleUpdate.args[1].options.launchMode, 'single', 'single-model launch mode saves');
+console.log(`llamacpp smoke ok: models=${JSON.stringify(singleUpdate.args[1].models)} options=${JSON.stringify(singleUpdate.args[1].options)}`);
 
 // ---------------------------------------------------------------------------
 // 网关面板:三块编号折叠区。

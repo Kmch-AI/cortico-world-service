@@ -1,8 +1,9 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { SERVICE_DEFAULTS } from '../src/config.ts';
+import { SERVICE_TYPES, SERVICE_TYPE_LABELS } from '../src/panel.ts';
 import type {
   PanelLogs, PanelModels, PanelServiceEntry, PanelState, PanelTokenResult,
 } from '../src/panel.ts';
@@ -71,7 +72,7 @@ function entry(patch: Partial<ServiceEntry> = {}): ServiceEntry {
   return serviceEntry({
     id: 'alpha',
     name: 'Alpha',
-    type: 'custom',
+    type: 'openai',
     endpoint: 'http://127.0.0.1:9101',
     serverDir: '',
     binary: 'C:/bin/alpha.exe',
@@ -213,7 +214,7 @@ describe('services 面板', () => {
     const created = await ui.invoke!('services', 'add', [{
       id: 'user-supplied',
       name: 'Beta',
-      type: 'custom',
+      type: 'openai',
       endpoint: 'http://127.0.0.1:9102',
       enabled: true,
       manage: true,
@@ -280,14 +281,14 @@ describe('services 面板', () => {
     const { world, services } = make({ services: [entry()] });
     const ui = world.webUi('zh');
     const base = {
-      type: 'custom',
+      type: 'openai',
       serverDir: '',
       binary: 'C:/bin/other.exe',
     };
     await ui.invoke!('services', 'add', [{ ...base, name: '本地语音', endpoint: 'http://127.0.0.1:9102' }]);
-    expect(services.at(-1)?.map((item) => item.id)).toEqual(['alpha', 'custom-1']);
+    expect(services.at(-1)?.map((item) => item.id)).toEqual(['alpha', 'openai-1']);
     await ui.invoke!('services', 'add', [{ ...base, name: 'Alpha', endpoint: 'http://127.0.0.1:9103' }]);
-    expect(services.at(-1)?.map((item) => item.id)).toEqual(['alpha', 'custom-1', 'alpha-2']);
+    expect(services.at(-1)?.map((item) => item.id)).toEqual(['alpha', 'openai-1', 'alpha-2']);
   });
 
   it('坏名字、坏端点与坏类型都拒绝,且不写回', async () => {
@@ -295,7 +296,7 @@ describe('services 面板', () => {
     const ui = world.webUi('zh');
     const base = {
       name: 'Other',
-      type: 'custom',
+      type: 'openai',
       serverDir: '',
       binary: 'C:/bin/other.exe',
     };
@@ -415,5 +416,29 @@ describe('services 面板', () => {
     const state = await ui.invoke!('services', 'probe', ['alpha']) as PanelState;
     expect(state.services[0]?.phase).toBe('online');
     expect(h.launches).toEqual([]);
+  });
+
+  it('类型表不再有 svc/custom,StartLux Decision 在列', () => {
+    expect(SERVICE_TYPES).toEqual(['audiocpp', 'sing', 'openai', 'llamacpp', 'startlux', 'systemone']);
+    expect(SERVICE_TYPES).not.toContain('svc');
+    expect(SERVICE_TYPES).not.toContain('custom');
+    expect(SERVICE_TYPE_LABELS.openai).toBe('OpenAI');
+    expect(SERVICE_TYPE_LABELS.llamacpp).toBe('llama.cpp');
+    expect(SERVICE_TYPE_LABELS.startlux).toBe('StartLux Decision');
+  });
+
+  it('modelFiles 读取 GGUF 目录,返回相对路径去掉扩展名', async () => {
+    const dir = tempDir();
+    mkdirSync(join(dir, 'nested'), { recursive: true });
+    writeFileSync(join(dir, 'model-a.gguf'), 'x');
+    writeFileSync(join(dir, 'model-b.GGUF'), 'x');
+    writeFileSync(join(dir, 'notes.txt'), 'x');
+    writeFileSync(join(dir, 'nested', 'model-c.gguf'), 'x');
+    const { world } = make({ services: [entry()] });
+    const ui = world.webUi('zh');
+    const files = await ui.invoke!('services', 'modelFiles', [dir]) as string[];
+    expect(files).toEqual(['model-a', 'model-b', 'nested/model-c']);
+    expect(await ui.invoke!('services', 'modelFiles', [''])).toEqual([]);
+    expect(await ui.invoke!('services', 'modelFiles', [join(dir, 'missing')])).toEqual([]);
   });
 });

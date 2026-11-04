@@ -69,6 +69,7 @@ export class Manager {
       entry,
       dataDir: this.opts.dataDir,
       log: this.log,
+      peers: () => this.entries(),
       deps: {
         ...this.opts.deps,
         onPhase: (status) => {

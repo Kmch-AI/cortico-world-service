@@ -11,7 +11,7 @@ import type {
   WebUiCheckbox, WebUiClientBundle, WebUiPanel, WebUiPanelContext, WebUiSheet,
 } from 'cortico/web/shared/client-panel.ts';
 import {
-  SERVICE_TYPES,
+  SERVICE_TYPES, SERVICE_TYPE_LABELS,
   type PanelGateway, type PanelLogs, type PanelService, type PanelServiceEntry, type PanelState,
   type PanelTokenResult,
 } from '../src/panel.ts';
@@ -27,8 +27,8 @@ type Tone = 'on' | 'off' | 'plain';
 const DEFAULT_ENDPOINTS: Partial<Record<ServiceType, string>> = {
   audiocpp: 'http://127.0.0.1:8080',
   sing: 'http://127.0.0.1:9882',
-  svc: 'http://127.0.0.1:9882',
   llamacpp: 'http://127.0.0.1:8081',
+  startlux: 'http://127.0.0.1:8091',
   systemone: 'http://127.0.0.1:8091',
 };
 
@@ -71,20 +71,35 @@ function gatewayPhase(T: PanelText, gw: PanelGateway): PhaseView {
 function typeNote(T: PanelText, type: ServiceType): string {
   switch (type) {
     case 'audiocpp': return T.typeAudiocpp;
-    case 'openai': return T.typeOpenai;
     case 'sing': return T.typeSing;
+    case 'openai': return T.typeOpenai;
     case 'llamacpp': return T.typeLlamacpp;
+    case 'startlux': return T.typeStartlux;
     case 'systemone': return T.typeSystemone;
-    case 'svc': return T.typeSvc;
-    case 'custom': return T.typeCustom;
   }
+  return T.typeLegacy;
 }
 
-function firstModel(value: string | readonly string[] | undefined): string | undefined {
-  if (typeof value === 'string') {
-    return value.split(/[\s,]+/).map((item) => item.trim()).find(Boolean);
-  }
-  return value?.map((item) => item.trim()).find(Boolean);
+function typeLabel(type: ServiceType): string {
+  return SERVICE_TYPE_LABELS[type] ?? type;
+}
+
+function baseName(path: string): string {
+  return path.split(/[\\/]+/).filter(Boolean).pop() ?? '';
+}
+
+/** 卡片上的模型摘要:多选时显示第一个 +N；StartLux 显示模型目录名。 */
+function modelSummaryOf(type: ServiceType, models: readonly string[], modelDir = ''): string {
+  const list = models.map((model) => model.trim()).filter(Boolean);
+  if (list.length > 1) return `${list[0]} +${list.length - 1}`;
+  if (list[0]) return list[0];
+  if (type === 'startlux' && modelDir.trim()) return baseName(modelDir);
+  return '';
+}
+
+function modelSummary(entry: Pick<ServiceEntry, 'type' | 'models' | 'options'>): string {
+  const modelDir = typeof entry.options?.modelDir === 'string' ? entry.options.modelDir : '';
+  return modelSummaryOf(entry.type, entry.models ?? [], modelDir);
 }
 
 function lampClass(phase: PhaseView): string {
@@ -193,10 +208,8 @@ interface RuntimeFields {
   nGpuLayers: string;
   parallel: string;
   modelDir: string;
-  startluxDir: string;
-  startluxBinary: string;
-  startluxArgs: string;
-  systemonePort: string;
+  llamacppService: string;
+  llamacppUrl: string;
   thinkMode: string;
   gate: string;
   instant: boolean;
@@ -218,6 +231,8 @@ interface FormBuildOptions {
   mode: 'draft' | 'edit';
   /** 草稿的运行时字段存回草稿,不重新从 options JSON 推导。 */
   runtime?: RuntimeFields;
+  /** 同一组配置里的服务;StartLux Decision 用它列出 llama.cpp 条目。 */
+  services?: readonly PanelService[];
   onDirty(): void;
   onChange?(next: { seed: FormSeed; runtime: RuntimeFields }): void;
   onTest?(): Promise<{ ok: boolean; text: string }>;
@@ -256,7 +271,7 @@ function newDraft(T: PanelText): DraftState {
     modelProfile: '',
     models: '',
     tasks: '',
-    launchMode: 'serve',
+    launchMode: 'router',
     optionsText: '',
     backend: '',
     device: '',
@@ -269,10 +284,8 @@ function newDraft(T: PanelText): DraftState {
     nGpuLayers: '',
     parallel: '',
     modelDir: '',
-    startluxDir: '',
-    startluxBinary: '',
-    startluxArgs: '',
-    systemonePort: '',
+    llamacppService: '',
+    llamacppUrl: '',
     thinkMode: '',
     gate: '',
     instant: false,
@@ -327,10 +340,8 @@ function runtimeOfOptions(options: Record<string, unknown> | null): RuntimeField
     nGpuLayers: typeof options?.nGpuLayers === 'string' ? options.nGpuLayers : '',
     parallel: numberText(options?.parallel),
     modelDir: typeof options?.modelDir === 'string' ? options.modelDir : '',
-    startluxDir: typeof options?.startluxDir === 'string' ? options.startluxDir : '',
-    startluxBinary: typeof options?.startluxBinary === 'string' ? options.startluxBinary : '',
-    startluxArgs: typeof options?.startluxArgs === 'string' ? options.startluxArgs : '',
-    systemonePort: numberText(options?.systemonePort),
+    llamacppService: typeof options?.llamacppService === 'string' ? options.llamacppService : '',
+    llamacppUrl: typeof options?.llamacppUrl === 'string' ? options.llamacppUrl : '',
     thinkMode: typeof options?.thinkMode === 'string' ? options.thinkMode : '',
     gate: numberText(options?.gate),
     instant: options?.instant === true,
@@ -355,7 +366,10 @@ function buildServiceForm(
   const runtime = opts.runtime ?? runtimeOfOptions(optionsObject(seed.optionsText));
 
   const name = ui.input({ value: seed.name });
-  const type = ui.select({ value: seed.type, options: SERVICE_TYPES });
+  const type = ui.select({
+    value: seed.type,
+    options: SERVICE_TYPES.map((value) => ({ value, label: typeLabel(value) })),
+  });
   const typeNoteEl = ui.h('div', 'tdesc', typeNote(T, seed.type));
   const endpoint = ui.input({
     value: seed.endpoint,
@@ -394,7 +408,7 @@ function buildServiceForm(
     { value: 'embeddings,rerank', label: T.taskEmbeddings },
     { value: 'embeddings', label: 'Embeddings' },
     { value: 'rerank', label: 'Rerank' },
-    { value: 'systemone', label: T.taskSystemone },
+    { value: 'chat', label: T.taskChat },
   ];
   // 任务列表用逗号存储；旧配置可能带空格，先归一化再匹配预设，避免下拉框退化成自定义文本。
   const seedTasks = seed.tasks.replace(/\s*,\s*/g, ',');
@@ -402,14 +416,13 @@ function buildServiceForm(
     taskOptions.push({ value: seedTasks, label: seedTasks });
   }
   const tasks = ui.select({
-    value: seedTasks || 'embeddings,rerank',
+    value: seedTasks || 'chat',
     options: taskOptions,
   });
   const launchMode = ui.select({
-    value: seed.launchMode || 'serve',
+    value: seed.launchMode === 'single' ? 'single' : 'router',
     options: [
-      { value: 'serve', label: T.launchServe },
-      { value: 'router', label: T.launchRouter },
+      { value: 'router', label: T.launchMulti },
       { value: 'single', label: T.launchSingle },
     ],
   });
@@ -425,13 +438,27 @@ function buildServiceForm(
   parallel.step = '1';
   parallel.placeholder = '1';
   const modelDir = ui.input({ value: runtime.modelDir, cls: 'mono' });
-  const startluxDir = ui.input({ value: runtime.startluxDir });
-  const startluxBinary = ui.input({ value: runtime.startluxBinary, cls: 'mono', placeholder: 'startlux-decide.exe' });
-  const startluxArgs = ui.input({ value: runtime.startluxArgs, cls: 'mono' });
-  const systemonePort = ui.input({ type: 'number', value: runtime.systemonePort });
-  systemonePort.min = '1';
-  systemonePort.max = '65535';
-  systemonePort.step = '1';
+  const llamacppServices = (opts.services ?? []).filter((item) => item.entry.type === 'llamacpp');
+  const llamacppServiceOptions = [
+    { value: '', label: T.manualAddress },
+    ...llamacppServices.map((item) => ({ value: item.entry.id, label: item.entry.name })),
+  ];
+  if (runtime.llamacppService
+    && !llamacppServiceOptions.some((option) => option.value === runtime.llamacppService)) {
+    llamacppServiceOptions.push({
+      value: runtime.llamacppService,
+      label: `${runtime.llamacppService} ${T.missingService}`,
+    });
+  }
+  const llamacppService = ui.select({
+    value: runtime.llamacppService,
+    options: llamacppServiceOptions,
+  });
+  const llamacppUrl = ui.input({
+    value: runtime.llamacppUrl,
+    cls: 'mono',
+    placeholder: 'http://127.0.0.1:8081',
+  });
   const thinkMode = ui.select({
     value: runtime.thinkMode,
     options: [{ value: '', label: T.defaultValue }, 'auto', 'never', 'always'],
@@ -465,6 +492,91 @@ function buildServiceForm(
     }));
     return row;
   };
+
+  // 模型文件选择:多模型多选、单模型单选;文件列表从服务端读 GGUF 目录。
+  const selectedModels = seed.models.split(/[\s,]+/).map((item) => item.trim()).filter(Boolean);
+  let scannedFiles: string[] = [];
+  let scanToken = 0;
+  let scanTimer: { dispose(): void } | null = null;
+  const modelList = ui.h('div', 'svc-model-list');
+  const modelEmpty = ui.h('p', 'tdesc', T.modelFilesEmpty);
+  const pickerHead = ui.h('div', 'svc-path');
+  pickerHead.append(ui.button(T.refresh, {
+    size: 'sm',
+    onClick: () => void scanModels(),
+  }));
+  const modelChooser = ui.h('div', 'svc-models');
+  modelChooser.append(pickerHead, modelList, ui.h('p', 'tdesc', T.modelFilesNote));
+
+  function syncModelsInput(): void {
+    models.value = selectedModels.join(', ');
+    models.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  function renderModelList(): void {
+    modelList.replaceChildren();
+    const single = launchMode.value === 'single';
+    if (single && selectedModels.length > 1) selectedModels.splice(1);
+    const known = new Set(scannedFiles);
+    const extras = selectedModels.filter((name) => !known.has(name));
+    const entries = [...scannedFiles, ...extras];
+    if (!entries.length) {
+      modelList.append(modelsDir.value.trim() ? modelEmpty : ui.h('p', 'tdesc', T.modelFilesNoDir));
+      return;
+    }
+    const labelOf = (name: string): string =>
+      extras.includes(name) ? `${name} ${T.modelFilesMissing}` : name;
+    if (single) {
+      const select = ui.select({
+        value: selectedModels[0] ?? '',
+        options: [{ value: '', label: T.none }, ...entries.map((name) => ({ value: name, label: labelOf(name) }))],
+      });
+      select.addEventListener('change', () => {
+        selectedModels.splice(0, selectedModels.length, ...(select.value ? [select.value] : []));
+        syncModelsInput();
+      }, { signal: ctx.signal });
+      modelList.append(select);
+      return;
+    }
+    for (const name of entries) {
+      const box = ui.checkbox(labelOf(name), {
+        checked: selectedModels.includes(name),
+        onChange: (checked) => {
+          const index = selectedModels.indexOf(name);
+          if (checked && index < 0) selectedModels.push(name);
+          else if (!checked && index >= 0) selectedModels.splice(index, 1);
+          syncModelsInput();
+        },
+      });
+      modelList.append(box.el);
+    }
+  }
+
+  async function scanModels(): Promise<void> {
+    const dir = modelsDir.value.trim();
+    const token = ++scanToken;
+    if (!dir) {
+      scannedFiles = [];
+      renderModelList();
+      return;
+    }
+    try {
+      const files = await ctx.invoke<string[]>('modelFiles', [dir]);
+      if (ctx.signal.aborted || token !== scanToken) return;
+      scannedFiles = Array.isArray(files) ? files.filter((item) => typeof item === 'string') : [];
+    } catch {
+      if (ctx.signal.aborted || token !== scanToken) return;
+      scannedFiles = [];
+    }
+    renderModelList();
+  }
+
+  const scheduleScan = (): void => {
+    scanTimer?.dispose();
+    scanTimer = ctx.timeout(() => void scanModels(), 300);
+  };
+  modelsDir.addEventListener('input', scheduleScan, { signal: ctx.signal });
+  modelsDir.addEventListener('change', scheduleScan, { signal: ctx.signal });
 
   const identity = ui.sheet({ title: T.sectionIdentity });
   identity.el.classList.add('connection-identity');
@@ -532,7 +644,6 @@ function buildServiceForm(
   const llamacppGroup = ui.h('div', 'svc-process');
   llamacppGroup.append(
     fieldBlock(ui, T.fieldLaunchMode, launchMode, T.launchModeNote),
-    modelsDirField,
     cacheDirField,
     fieldBlock(ui, T.fieldContextSize, contextSize, T.contextSizeNote),
     fieldBlock(ui, T.fieldNgl, nGpuLayers, T.nglNote),
@@ -540,19 +651,19 @@ function buildServiceForm(
   );
   runtimeSection.body.append(llamacppGroup);
 
-  const systemoneGroup = ui.h('div', 'svc-process');
-  systemoneGroup.append(
-    ui.h('h4', 'svc-group-title', T.systemonePreset),
+  const llamacppUrlField = fieldBlock(ui, T.fieldLlamacppUrl, llamacppUrl, T.llamacppUrlNote);
+  const startluxGroup = ui.h('div', 'svc-process');
+  startluxGroup.append(
+    ui.h('h4', 'svc-group-title', T.startluxPreset),
     fieldBlock(ui, T.fieldModelDir, pathRow(modelDir, 'directory'), T.modelDirNote),
-    fieldBlock(ui, T.fieldStartluxDir, pathRow(startluxDir, 'directory'), T.startluxDirNote),
-    fieldBlock(ui, T.fieldStartluxBinary, pathRow(startluxBinary, 'file'), T.startluxBinaryNote),
-    fieldBlock(ui, T.fieldSystemonePort, systemonePort, T.systemonePortNote),
+    fieldBlock(ui, T.fieldLlamacppService, llamacppService, T.llamacppServiceNote),
+    llamacppUrlField,
     fieldBlock(ui, T.fieldThinkMode, thinkMode, T.thinkModeNote),
     fieldBlock(ui, T.fieldGate, gate, T.gateNote),
-    fieldBlock(ui, T.fieldStartluxArgs, startluxArgs, T.startluxArgsNote),
     checkBlock(ui, instant, T.instantNote),
+    ui.h('p', 'tdesc', T.startluxVenvNote),
   );
-  runtimeSection.body.append(systemoneGroup);
+  runtimeSection.body.append(startluxGroup);
 
   const tuningGroup = ui.h('div', 'svc-process');
   tuningGroup.append(
@@ -572,11 +683,9 @@ function buildServiceForm(
   const modelsSection = numberedSection(ui, flow, `${prefix}-models`, T.sectionModels, true);
   const tasksField = fieldBlock(ui, T.fieldTasks, tasks, T.tasksNote);
   const profileField = fieldBlock(ui, T.fieldModelProfile, modelProfile, T.modelProfileNote);
-  modelsSection.body.append(
-    tasksField,
-    profileField,
-    fieldBlock(ui, T.fieldModels, models, T.modelsNote),
-  );
+  const modelFilesField = fieldBlock(ui, T.fieldModelFiles, modelChooser);
+  const modelsField = fieldBlock(ui, T.fieldModels, models, T.modelsNote);
+  modelsSection.body.append(tasksField, profileField, modelsDirField, modelFilesField, modelsField);
 
   const advanced = numberedSection(ui, flow, `${prefix}-advanced`, T.advancedTitle, false);
   advanced.body.append(fieldBlock(ui, T.fieldOptions, optionsArea, T.optionsNote));
@@ -589,22 +698,29 @@ function buildServiceForm(
   function syncVisibility(): void {
     const current = type.value as ServiceType;
     const managed = manage.checked;
-    const startlux = current === 'llamacpp' && tasks.value === 'systemone';
-    const llama = current === 'llamacpp' && !startlux;
+    const llama = current === 'llamacpp';
+    const startlux = current === 'startlux';
     processGroup.hidden = !managed;
     llamacppGroup.hidden = !(managed && llama);
-    modelsDirField.hidden = launchMode.value === 'single';
-    cacheDirField.hidden = launchMode.value === 'single';
-    systemoneGroup.hidden = !(managed && startlux);
+    startluxGroup.hidden = !(managed && startlux);
     tuningGroup.hidden = !(managed && current === 'audiocpp');
     audiocppGroup.hidden = !(managed && current === 'audiocpp');
-    tasksField.hidden = current !== 'llamacpp';
-    profileField.hidden = current === 'llamacpp';
+    tasksField.hidden = !llama;
+    profileField.hidden = llama || startlux;
+    modelsDirField.hidden = !llama;
+    modelFilesField.hidden = !llama;
+    modelsField.hidden = llama || startlux;
+    modelsSection.el.hidden = startlux;
+    llamacppUrlField.hidden = Boolean(llamacppService.value);
   }
 
   manage.input.addEventListener('change', syncVisibility, { signal: ctx.signal });
   tasks.addEventListener('change', syncVisibility, { signal: ctx.signal });
-  launchMode.addEventListener('change', syncVisibility, { signal: ctx.signal });
+  llamacppService.addEventListener('change', syncVisibility, { signal: ctx.signal });
+  launchMode.addEventListener('change', () => {
+    renderModelList();
+    syncVisibility();
+  }, { signal: ctx.signal });
   type.addEventListener('change', () => {
     const next = type.value as ServiceType;
     typeNoteEl.textContent = typeNote(T, next);
@@ -616,10 +732,17 @@ function buildServiceForm(
       endpoint.value = nextDefault;
     }
     if (next === 'openai' || next === 'systemone') manage.setChecked(false);
+    if (next === 'startlux') {
+      selectedModels.splice(0, selectedModels.length);
+      models.value = '';
+    }
     lastType = next;
+    if (next === 'llamacpp' && modelsDir.value.trim()) scheduleScan();
     syncVisibility();
   }, { signal: ctx.signal });
+  renderModelList();
   syncVisibility();
+  if (seed.type === 'llamacpp' && runtime.modelsDir) void scanModels();
 
   function capture(): { seed: FormSeed; runtime: RuntimeFields } {
     return {
@@ -653,10 +776,8 @@ function buildServiceForm(
         nGpuLayers: nGpuLayers.value,
         parallel: parallel.value,
         modelDir: modelDir.value,
-        startluxDir: startluxDir.value,
-        startluxBinary: startluxBinary.value,
-        startluxArgs: startluxArgs.value,
-        systemonePort: systemonePort.value,
+        llamacppService: llamacppService.value,
+        llamacppUrl: llamacppUrl.value,
         thinkMode: thinkMode.value,
         gate: gate.value,
         instant: instant.checked,
@@ -686,119 +807,124 @@ function buildServiceForm(
       options = { ...parsed };
     }
 
-    const startlux = manage.checked && typeValue === 'llamacpp' && tasks.value === 'systemone';
-    if (manage.checked && typeValue === 'llamacpp') {
-      if (startlux) {
-        delete options.launchMode;
-        delete options.modelsDir;
-        delete options.cacheDir;
-        delete options.contextSize;
-        delete options.nGpuLayers;
-        delete options.parallel;
-        const modelDirValue = modelDir.value.trim();
-        if (!modelDirValue) return { error: T.badModelDir };
-        options.modelDir = modelDirValue;
-
-        const startluxDirValue = startluxDir.value.trim();
-        if (!startluxDirValue) return { error: T.badStartluxDir };
-        options.startluxDir = startluxDirValue;
-
-        const startluxBinaryValue = startluxBinary.value.trim();
-        if (startluxBinaryValue) options.startluxBinary = startluxBinaryValue;
-        else delete options.startluxBinary;
-
-        const startluxArgsValue = startluxArgs.value.trim();
-        if (startluxArgsValue) options.startluxArgs = startluxArgsValue;
-        else delete options.startluxArgs;
-
-        const portText = systemonePort.value.trim();
-        if (portText) {
-          const portValue = Number(portText);
-          if (!Number.isInteger(portValue) || portValue < 1 || portValue > 65535) {
-            return { error: T.badSystemonePort };
-          }
-          options.systemonePort = portValue;
-        } else {
-          delete options.systemonePort;
-        }
-
-        const thinkModeValue = thinkMode.value.trim();
-        if (thinkModeValue) {
-          if (thinkModeValue !== 'auto' && thinkModeValue !== 'never' && thinkModeValue !== 'always') {
-            return { error: T.badThinkMode };
-          }
-          options.thinkMode = thinkModeValue;
-        } else {
-          delete options.thinkMode;
-        }
-
-        const gateText = gate.value.trim();
-        if (gateText) {
-          const gateValue = Number(gateText);
-          if (!Number.isFinite(gateValue) || gateValue < 0 || gateValue > 1) {
-            return { error: T.badGate };
-          }
-          options.gate = gateValue;
-        } else {
-          delete options.gate;
-        }
-        if (instant.checked) options.instant = true;
-        else delete options.instant;
-      } else {
-        delete options.modelDir;
-        delete options.startluxDir;
-        delete options.startluxBinary;
-        delete options.startluxArgs;
-        delete options.systemonePort;
-        delete options.thinkMode;
-        delete options.gate;
-        delete options.instant;
-
-        const mode = launchMode.value;
-        options.launchMode = mode;
-
-        const modelsDirValue = modelsDir.value.trim();
-        if (mode !== 'single' && modelsDirValue) options.modelsDir = modelsDirValue;
-        else delete options.modelsDir;
-
-        const cacheDirValue = cacheDir.value.trim();
-        if (mode !== 'single' && cacheDirValue) options.cacheDir = cacheDirValue;
-        else delete options.cacheDir;
-
-        const contextText = contextSize.value.trim();
-        if (contextText) {
-          const value = Number(contextText);
-          if (!Number.isInteger(value) || value < 0) return { error: T.badContextSize };
-          options.contextSize = value;
-        } else {
-          delete options.contextSize;
-        }
-
-        const nglText = nGpuLayers.value.trim();
-        if (nglText) {
-          if (!/^(auto|all|\d+)$/i.test(nglText)) return { error: T.badNgl };
-          options.nGpuLayers = nglText.toLowerCase();
-        } else {
-          delete options.nGpuLayers;
-        }
-
-        const parallelText = parallel.value.trim();
-        if (parallelText) {
-          const value = Number(parallelText);
-          if (!Number.isInteger(value) || value < 1) return { error: T.badParallel };
-          options.parallel = value;
-        } else {
-          delete options.parallel;
-        }
-      }
+    const llama = typeValue === 'llamacpp';
+    const startlux = typeValue === 'startlux';
+    if (manage.checked && llama) {
+      delete options.modelDir;
+      delete options.llamacppService;
       delete options.llamacppUrl;
-    } else if (typeValue !== 'llamacpp') {
+      delete options.thinkMode;
+      delete options.gate;
+      delete options.instant;
+
+      const mode = launchMode.value === 'single' ? 'single' : 'router';
+      options.launchMode = mode;
+
+      const modelsDirValue = modelsDir.value.trim();
+      if (!modelsDirValue) return { error: T.badModelsDir };
+      options.modelsDir = modelsDirValue;
+
+      if (mode === 'single' && selectedModels.length === 0
+        && !/(^|\s)(-m|--model)(\s|=)/.test(args.value)) {
+        return { error: T.badSingleModel };
+      }
+
+      const cacheDirValue = cacheDir.value.trim();
+      if (cacheDirValue) options.cacheDir = cacheDirValue;
+      else delete options.cacheDir;
+
+      const contextText = contextSize.value.trim();
+      if (contextText) {
+        const value = Number(contextText);
+        if (!Number.isInteger(value) || value < 0) return { error: T.badContextSize };
+        options.contextSize = value;
+      } else {
+        delete options.contextSize;
+      }
+
+      const nglText = nGpuLayers.value.trim();
+      if (nglText) {
+        if (!/^(auto|all|\d+)$/i.test(nglText)) return { error: T.badNgl };
+        options.nGpuLayers = nglText.toLowerCase();
+      } else {
+        delete options.nGpuLayers;
+      }
+
+      const parallelText = parallel.value.trim();
+      if (parallelText) {
+        const value = Number(parallelText);
+        if (!Number.isInteger(value) || value < 1) return { error: T.badParallel };
+        options.parallel = value;
+      } else {
+        delete options.parallel;
+      }
+    } else if (manage.checked && startlux) {
       delete options.launchMode;
       delete options.modelsDir;
       delete options.cacheDir;
       delete options.contextSize;
       delete options.nGpuLayers;
       delete options.parallel;
+      // 0.6–0.8 的本地 StartLux 键。
+      delete options.startluxDir;
+      delete options.startluxBinary;
+      delete options.startluxArgs;
+      delete options.systemonePort;
+      delete options.systemoneUrl;
+      delete options.systemoneSecretName;
+
+      const modelDirValue = modelDir.value.trim();
+      if (!modelDirValue) return { error: T.badModelDir };
+      options.modelDir = modelDirValue;
+
+      const serviceId = llamacppService.value.trim();
+      if (serviceId) {
+        options.llamacppService = serviceId;
+        delete options.llamacppUrl;
+      } else {
+        const url = llamacppUrl.value.trim();
+        if (!url) return { error: T.badLlamacppUrl };
+        options.llamacppUrl = url;
+        delete options.llamacppService;
+      }
+
+      const thinkModeValue = thinkMode.value.trim();
+      if (thinkModeValue) {
+        if (thinkModeValue !== 'auto' && thinkModeValue !== 'never' && thinkModeValue !== 'always') {
+          return { error: T.badThinkMode };
+        }
+        options.thinkMode = thinkModeValue;
+      } else {
+        delete options.thinkMode;
+      }
+
+      const gateText = gate.value.trim();
+      if (gateText) {
+        const gateValue = Number(gateText);
+        if (!Number.isFinite(gateValue) || gateValue < 0 || gateValue > 1) {
+          return { error: T.badGate };
+        }
+        options.gate = gateValue;
+      } else {
+        delete options.gate;
+      }
+      if (instant.checked) options.instant = true;
+      else delete options.instant;
+    } else if (!llama && !startlux) {
+      for (const key of [
+        'launchMode', 'modelsDir', 'cacheDir', 'contextSize', 'nGpuLayers', 'parallel',
+        'modelDir', 'llamacppService', 'llamacppUrl', 'thinkMode', 'gate', 'instant',
+        'startluxDir', 'startluxBinary', 'startluxArgs', 'systemonePort', 'systemoneUrl',
+        'systemoneSecretName',
+      ]) {
+        delete options[key];
+      }
+    }
+    // 不托管时也要记住 GGUF 目录，下一次打开面板才能重新扫描模型。
+    if (llama && !manage.checked) {
+      const modelsDirValue = modelsDir.value.trim();
+      if (modelsDirValue) options.modelsDir = modelsDirValue;
+      else delete options.modelsDir;
     }
 
     if (manage.checked && typeValue === 'audiocpp') {
@@ -831,7 +957,9 @@ function buildServiceForm(
       }
     }
 
-    const list = models.value.split(/[\s,]+/).map((item) => item.trim()).filter(Boolean);
+    const list = llama
+      ? (launchMode.value === 'single' ? selectedModels.slice(0, 1) : [...selectedModels])
+      : models.value.split(/[\s,]+/).map((item) => item.trim()).filter(Boolean);
     return {
       value: {
         name: nameValue,
@@ -845,9 +973,9 @@ function buildServiceForm(
         binary: binary.value.trim() || null,
         args: args.value.trim() || null,
         secretName: secretName.value.trim() || null,
-        modelProfile: modelProfile.value.trim() || null,
-        models: list.length ? list : null,
-        tasks: typeValue === 'llamacpp'
+        modelProfile: llama || startlux ? null : (modelProfile.value.trim() || null),
+        models: startlux ? null : (list.length ? list : null),
+        tasks: llama
           ? tasks.value.split(',').map((item) => item.trim()).filter(Boolean)
           : null,
         options: Object.keys(options).length ? options : null,
@@ -958,15 +1086,15 @@ const servicesPanel: WebUiPanel = {
 
       const name = ui.h('div', 'connection-name');
       const facts = ui.h('div', 'connection-facts');
-      const fact = (key: string): HTMLElement => {
+      const fact = (key: string, label: string): HTMLElement => {
         const box = ui.h('span', `kv kv-${key}`);
         const value = ui.h('span', 'kv-v');
-        box.append(ui.h('span', 'kv-k', key), value);
+        box.append(ui.h('span', 'kv-k', label), value);
         facts.append(box);
         return value;
       };
-      const typeValue = fact(T.cardType);
-      const modelValue = fact(T.cardModel);
+      const typeValue = fact('type', T.cardType);
+      const modelValue = fact('model', T.cardModel);
 
       const status = ui.h('div', 'connection-status svc-statusline');
       const lamp = ui.h('span', 'svc-lamp');
@@ -1006,8 +1134,12 @@ const servicesPanel: WebUiPanel = {
         if (identity === DRAFT_KEY) {
           if (!draft) continue;
           node.name.textContent = draft.name.trim() || T.draftName;
-          node.typeValue.textContent = draft.type;
-          node.modelValue.textContent = firstModel(draft.models) ?? T.none;
+          node.typeValue.textContent = typeLabel(draft.type);
+          node.modelValue.textContent = modelSummaryOf(
+            draft.type,
+            draft.models.split(/[\s,]+/),
+            draft.modelDir,
+          ) || T.none;
           paintPhase(node, draftPhase(T));
           node.actions.replaceChildren();
           const active = selection?.kind === 'draft';
@@ -1019,8 +1151,8 @@ const servicesPanel: WebUiPanel = {
         const service = state?.services.find((item) => item.entry.id === identity);
         if (!service) continue;
         node.name.textContent = service.entry.name;
-        node.typeValue.textContent = service.entry.type;
-        node.modelValue.textContent = service.entry.models?.[0] ?? T.none;
+        node.typeValue.textContent = typeLabel(service.entry.type);
+        node.modelValue.textContent = modelSummary(service.entry) || T.none;
         paintPhase(node, servicePhase(T, service));
         const actionKey = `${service.entry.enabled}:${service.phase}`;
         if (actionKey !== node.actionKey) {
@@ -1129,7 +1261,11 @@ const servicesPanel: WebUiPanel = {
           { k: T.rowStatus, v: phasePill(ui, draftPhase(T)) },
           { k: T.rowDetail, v: mono(T.draftDetail) },
           { k: T.rowAddress, v: mono(current.endpoint.trim() || T.none) },
-          { k: T.rowModels, v: mono(firstModel(current.models) ?? T.none) },
+          { k: T.rowModels, v: mono(modelSummaryOf(
+            current.type,
+            current.models.split(/[\s,]+/),
+            current.modelDir,
+          ) || T.none) },
           { k: T.rowPid, v: mono(T.none) },
           { k: T.rowRestarts, v: mono(T.none) },
           { k: T.rowToken, v: tokenCell(false, undefined) },
@@ -1160,14 +1296,13 @@ const servicesPanel: WebUiPanel = {
           nGpuLayers: current.nGpuLayers,
           parallel: current.parallel,
           modelDir: current.modelDir,
-          startluxDir: current.startluxDir,
-          startluxBinary: current.startluxBinary,
-          startluxArgs: current.startluxArgs,
-          systemonePort: current.systemonePort,
+          llamacppService: current.llamacppService,
+          llamacppUrl: current.llamacppUrl,
           thinkMode: current.thinkMode,
           gate: current.gate,
           instant: current.instant,
         },
+        services: state?.services ?? [],
         onDirty: () => { dirtyEl.hidden = false; },
         onChange: (next) => {
           Object.assign(current, next.seed, next.runtime);
@@ -1255,7 +1390,6 @@ const servicesPanel: WebUiPanel = {
           { k: T.rowAddress, v: mono(current.baseUrl || T.none) },
           { k: T.rowModels, v: mono(String(current.models)) },
           { k: T.rowPid, v: mono(current.pid === null ? T.none : String(current.pid)) },
-          ...(current.companionPid ? [{ k: T.rowCompanionPid, v: mono(String(current.companionPid)) }] : []),
           { k: T.rowRestarts, v: mono(String(current.restarts)) },
           { k: T.rowToken, v: tokenCell(current.entry.tokenSet, current.entry.secretName) },
         ]));
@@ -1280,6 +1414,7 @@ const servicesPanel: WebUiPanel = {
       };
       const form = buildServiceForm(ui, ctx, T, seedOfEntry(service.entry), {
         mode: 'edit',
+        services: state?.services ?? [],
         onDirty: () => { dirtyEl.hidden = false; },
         onTest: async () => {
           const next = await ctx.invoke<PanelState>('probe', [id]);

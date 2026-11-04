@@ -117,11 +117,15 @@ function systemoneEntry(url: string): ServiceEntry {
 
 function startluxEntry(url: string): ServiceEntry {
   return {
-    ...llamacppEntry(url),
     id: 'startlux',
     name: 'StartLux',
-    tasks: ['systemone'],
-    options: { systemoneUrl: url },
+    type: 'startlux',
+    enabled: true,
+    endpoint: url,
+    manage: false,
+    autoStart: false,
+    restartOnExit: false,
+    secretName: 'SYSTEMONE_TOKEN',
   };
 }
 
@@ -480,7 +484,7 @@ describe('service World JSON routes', () => {
     await world.stop();
   });
 
-  it('llamacpp 条目带 systemone 任务时把 /v1/systemone 路由到 StartLux 伴生端点', async () => {
+  it('StartLux Decision 条目把 /v1/systemone 路由到自己的端点', async () => {
     const upstream = await ttsUpstream();
     const world = build([startluxEntry(upstream.url)]);
     await world.start(new FakeHost());
@@ -499,10 +503,10 @@ describe('service World JSON routes', () => {
     };
     expect(health.services[0]).toMatchObject({
       tasks: ['systemone'],
-      entry: { type: 'llamacpp', tasks: ['systemone'] },
+      entry: { type: 'startlux' },
     });
 
-    // StartLux 只声明 systemone 任务，不应被 embeddings 选中。
+    // StartLux Decision 只声明 systemone 任务，不应被 embeddings 选中。
     const embed = await fetch(`${base}/v1/embeddings`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

@@ -1,16 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
-  endpointUrl, healthPathOf, healthUrl, hostPort, isStartLuxEntry, llamacppLaunchMode, primaryOrigin,
-  protocolOf, serverJsonPath, serviceIdFor, slugify, systemoneEndpointOf, systemoneHostPort, tasksOfEntry,
+  endpointUrl, healthPathOf, healthUrl, hostPort, llamacppLaunchMode,
+  protocolOf, serverJsonPath, serviceIdFor, slugify, tasksOfEntry,
 } from '../src/entry.ts';
 import { normalizeEntry, validateServices } from '../src/validate.ts';
 import type { ServiceEntry, ServiceType } from '../src/types.ts';
 
 function entry(patch: Partial<ServiceEntry> = {}): ServiceEntry {
   return {
-    id: 'svc',
-    name: 'svc',
-    type: 'custom',
+    id: 'openai',
+    name: 'openai',
+    type: 'openai',
     endpoint: 'http://127.0.0.1:9000',
     enabled: true,
     manage: false,
@@ -23,64 +23,47 @@ function entry(patch: Partial<ServiceEntry> = {}): ServiceEntry {
 describe('type → protocol', () => {
   it.each([
     ['audiocpp', 'audiocpp'],
-    ['openai', 'openai'],
     ['sing', 'sing'],
-    ['svc', 'sing'],
+    ['openai', 'openai'],
     ['llamacpp', 'llamacpp'],
+    ['startlux', 'systemone'],
     ['systemone', 'systemone'],
-    ['custom', 'custom'],
   ] as Array<[ServiceType, string]>)('protocolOf(%s) = %s', (type, protocol) => {
     expect(protocolOf(type)).toBe(protocol);
     expect(protocolOf({ type })).toBe(protocol);
+  });
+
+  it('0.8 及更早的 svc/custom 配置仍按原方言处理', () => {
+    expect(protocolOf('svc' as ServiceType)).toBe('sing');
+    expect(protocolOf('custom' as ServiceType)).toBe('custom');
   });
 });
 
 describe('model tasks', () => {
   it('按类型给默认任务，显式 tasks 优先', () => {
     expect(tasksOfEntry(entry({ type: 'llamacpp' }))).toEqual(['embeddings', 'rerank']);
+    expect(tasksOfEntry(entry({ type: 'startlux' }))).toEqual(['systemone']);
     expect(tasksOfEntry(entry({ type: 'systemone' }))).toEqual(['systemone']);
     expect(tasksOfEntry(entry({ type: 'audiocpp' }))).toEqual(['tts']);
-    expect(tasksOfEntry(entry({ type: 'llamacpp', tasks: ['systemone'] }))).toEqual(['systemone']);
+    expect(tasksOfEntry(entry({ type: 'llamacpp', tasks: ['chat'] }))).toEqual(['chat']);
     expect(tasksOfEntry(entry({ type: 'llamacpp', tasks: ['embeddings'] }))).toEqual(['embeddings']);
   });
 
-  it('llamacpp + systemone 是 StartLux 模型', () => {
-    expect(isStartLuxEntry(entry({ type: 'llamacpp', tasks: ['systemone'] }))).toBe(true);
-    expect(isStartLuxEntry(entry({ type: 'llamacpp' }))).toBe(false);
-    expect(isStartLuxEntry(entry({ type: 'systemone' }))).toBe(false);
-  });
-
-  it('llamacpp 启动方式：显式优先，旧 args 可推断，空配置默认 serve', () => {
-    expect(llamacppLaunchMode(entry({ type: 'llamacpp' }))).toBe('serve');
+  it('llama.cpp 启动方式：显式优先，旧 serve 配置按多模型处理', () => {
+    expect(llamacppLaunchMode(entry({ type: 'llamacpp' }))).toBe('router');
     expect(llamacppLaunchMode(entry({ type: 'llamacpp', options: { launchMode: 'router' } })))
       .toBe('router');
+    expect(llamacppLaunchMode(entry({ type: 'llamacpp', options: { launchMode: 'single' } })))
+      .toBe('single');
+    expect(llamacppLaunchMode(entry({ type: 'llamacpp', options: { launchMode: 'serve' } })))
+      .toBe('router');
     expect(llamacppLaunchMode(entry({ type: 'llamacpp', args: 'serve --models-dir D:/models' })))
-      .toBe('serve');
+      .toBe('router');
     expect(llamacppLaunchMode(entry({ type: 'llamacpp', args: '--models-dir D:/models' })))
       .toBe('router');
     expect(llamacppLaunchMode(entry({ type: 'llamacpp', args: '-m D:/models/a.gguf' })))
       .toBe('single');
-    expect(llamacppLaunchMode(entry({ type: 'llamacpp', tasks: ['systemone'], args: 'serve' })))
-      .toBe('single');
     expect(llamacppLaunchMode(entry({ type: 'audiocpp' }))).toBe('single');
-  });
-
-  it('systemone 上游：外部用 endpoint，本地用伴生端口', () => {
-    expect(systemoneEndpointOf(entry({ type: 'systemone', endpoint: 'https://sys.example.com' })))
-      .toBe('https://sys.example.com');
-    expect(systemoneEndpointOf(entry({ type: 'llamacpp', endpoint: 'http://127.0.0.1:8081' })))
-      .toBe('http://127.0.0.1:8091');
-    expect(systemoneEndpointOf(entry({
-      type: 'llamacpp', endpoint: 'http://127.0.0.1:8081', options: { systemonePort: 9090 },
-    }))).toBe('http://127.0.0.1:9090');
-    expect(systemoneEndpointOf(entry({
-      type: 'llamacpp', endpoint: 'http://127.0.0.1:8081', options: { systemoneUrl: 'http://127.0.0.1:9999' },
-    }))).toBe('http://127.0.0.1:9999');
-    expect(systemoneHostPort(entry({
-      type: 'llamacpp', endpoint: '0.0.0.0:8081', options: { systemonePort: 9090 },
-    }))).toEqual({ host: '127.0.0.1', port: 9090 });
-    expect(primaryOrigin(entry({ type: 'llamacpp', endpoint: 'http://127.0.0.1:8081/v1' })))
-      .toBe('http://127.0.0.1:8081');
   });
 });
 
@@ -94,7 +77,8 @@ describe('endpointUrl', () => {
     expect(endpointUrl(entry({ type: 'audiocpp', endpoint: '' }))).toBe('http://127.0.0.1:8080');
     expect(endpointUrl(entry({ type: 'audiocpp', endpoint: 'http://127.0.0.1' }))).toBe('http://127.0.0.1:8080');
     expect(endpointUrl(entry({ type: 'sing', endpoint: '127.0.0.1' }))).toBe('http://127.0.0.1:9882');
-    expect(endpointUrl(entry({ type: 'svc', endpoint: 'http://127.0.0.1' }))).toBe('http://127.0.0.1:9882');
+    expect(endpointUrl(entry({ type: 'startlux', endpoint: 'http://127.0.0.1' })))
+      .toBe('http://127.0.0.1:8091');
     expect(endpointUrl(entry({ type: 'systemone', endpoint: 'http://127.0.0.1' })))
       .toBe('http://127.0.0.1:8091');
     expect(endpointUrl(entry({ type: 'llamacpp', endpoint: 'http://127.0.0.1' })))
@@ -110,7 +94,6 @@ describe('endpointUrl', () => {
 
   it('保留路径并去掉末尾斜杠', () => {
     expect(endpointUrl(entry({ type: 'openai', endpoint: 'https://host/v1/' }))).toBe('https://host/v1');
-    expect(endpointUrl(entry({ type: 'custom', endpoint: 'http://host:9010/api' }))).toBe('http://host:9010/api');
   });
 });
 
@@ -120,6 +103,8 @@ describe('hostPort', () => {
       .toEqual({ host: '127.0.0.1', port: 8080 });
     expect(hostPort(entry({ type: 'sing', endpoint: 'http://0.0.0.0:9999' })))
       .toEqual({ host: '0.0.0.0', port: 9999 });
+    expect(hostPort(entry({ type: 'startlux', endpoint: 'http://127.0.0.1' })))
+      .toEqual({ host: '127.0.0.1', port: 8091 });
     expect(hostPort(entry({ type: 'systemone', endpoint: 'http://127.0.0.1' })))
       .toEqual({ host: '127.0.0.1', port: 8091 });
     expect(hostPort(entry({ type: 'llamacpp', endpoint: 'http://127.0.0.1' })))
@@ -136,14 +121,14 @@ describe('healthPathOf', () => {
     expect(healthPathOf('audiocpp')).toBe('/health');
     expect(healthPathOf('openai')).toBe('/health');
     expect(healthPathOf('sing')).toBe('/health');
-    expect(healthPathOf('custom')).toBe('/health');
+    expect(healthPathOf('startlux')).toBe('/health');
     expect(healthPathOf('systemone')).toBe('/health');
     expect(healthPathOf('llamacpp')).toBe('/health');
     expect(healthUrl(entry({ type: 'llamacpp', endpoint: 'http://127.0.0.1:8080' })))
       .toBe('http://127.0.0.1:8080/health');
-    expect(healthUrl(entry({ type: 'systemone', endpoint: 'http://127.0.0.1:9010/v1' })))
+    expect(healthUrl(entry({ type: 'startlux', endpoint: 'http://127.0.0.1:9010/v1' })))
       .toBe('http://127.0.0.1:9010/health');
-    expect(healthUrl(entry({ type: 'custom', endpoint: 'http://127.0.0.1:9010/v1' })))
+    expect(healthUrl(entry({ type: 'systemone', endpoint: 'http://127.0.0.1:9010/v1' })))
       .toBe('http://127.0.0.1:9010/health');
   });
 });
@@ -159,15 +144,16 @@ describe('serverJsonPath', () => {
 describe('service id generation', () => {
   it('ASCII 名字取 slug,重名追加序号', () => {
     expect(slugify('My TTS Server')).toBe('my-tts-server');
-    expect(serviceIdFor('My TTS', 'custom')).toBe('my-tts');
-    expect(serviceIdFor('My TTS', 'custom', ['my-tts'])).toBe('my-tts-2');
-    expect(serviceIdFor('My TTS', 'custom', ['my-tts', 'my-tts-2'])).toBe('my-tts-3');
+    expect(serviceIdFor('My TTS', 'openai')).toBe('my-tts');
+    expect(serviceIdFor('My TTS', 'openai', ['my-tts'])).toBe('my-tts-2');
+    expect(serviceIdFor('My TTS', 'openai', ['my-tts', 'my-tts-2'])).toBe('my-tts-3');
   });
 
   it('中文或空名字取 type + 序号', () => {
-    expect(serviceIdFor('本地语音', 'custom')).toBe('custom-1');
-    expect(serviceIdFor('本地语音', 'custom', ['custom-1'])).toBe('custom-2');
+    expect(serviceIdFor('本地语音', 'openai')).toBe('openai-1');
+    expect(serviceIdFor('本地语音', 'openai', ['openai-1'])).toBe('openai-2');
     expect(serviceIdFor('', 'audiocpp')).toBe('audiocpp-1');
+    expect(serviceIdFor('', 'startlux')).toBe('startlux-1');
   });
 });
 
@@ -184,23 +170,40 @@ describe('normalizeEntry', () => {
     expect(created.manage).toBe(true);
   });
 
-  it('systemone 默认不托管；tasks 校验并去重', () => {
+  it('systemone 默认不托管；startlux 默认托管；tasks 校验并去重', () => {
     const external = normalizeEntry({ name: 'Ext', type: 'systemone', endpoint: 'https://jev.example.com' });
     expect(external.manage).toBe(false);
+    const local = normalizeEntry({ name: 'Lux', type: 'startlux', endpoint: 'http://127.0.0.1:8091' });
+    expect(local.manage).toBe(true);
     const tasks = normalizeEntry({
       name: 'x', type: 'llamacpp', endpoint: 'http://host',
-      tasks: ['systemone', 'systemone', 'embeddings'],
+      tasks: ['chat', 'chat', 'embeddings'],
     });
-    expect(tasks.tasks).toEqual(['systemone', 'embeddings']);
+    expect(tasks.tasks).toEqual(['chat', 'embeddings']);
     expect(() => normalizeEntry({
-      name: 'x', type: 'llamacpp', endpoint: 'http://host', tasks: ['chat'],
+      name: 'x', type: 'llamacpp', endpoint: 'http://host', tasks: ['systemone'],
+    })).toThrow(/StartLux Decision/);
+    expect(() => normalizeEntry({
+      name: 'x', type: 'llamacpp', endpoint: 'http://host', tasks: ['asr'],
     })).toThrow(/unknown model task/);
+  });
+
+  it('单模型只接受一个模型', () => {
+    const one = normalizeEntry({
+      name: 'x', type: 'llamacpp', endpoint: 'http://host',
+      models: ['a'], options: { launchMode: 'single' },
+    });
+    expect(one.models).toEqual(['a']);
+    expect(() => normalizeEntry({
+      name: 'x', type: 'llamacpp', endpoint: 'http://host',
+      models: ['a', 'b'], options: { launchMode: 'single' },
+    })).toThrow(/exactly one model/);
   });
 
   it('更新时保留 id,拒绝改 id', () => {
     const base = entry();
     const updated = normalizeEntry({ name: 'New name' }, base);
-    expect(updated.id).toBe('svc');
+    expect(updated.id).toBe('openai');
     expect(updated.name).toBe('New name');
     expect(() => normalizeEntry({ id: 'other' }, base)).toThrow(/id cannot/);
   });
@@ -217,13 +220,14 @@ describe('normalizeEntry', () => {
     const created = normalizeEntry({
       name: 'x',
       endpoint: 'http://host',
+      type: 'openai',
       serverDir: 'C:/svc',
       binary: 'run.exe',
       args: '--port 1',
       secretName: 'TOKEN',
       modelProfile: 'openai',
       models: ['a', 'b'],
-      tasks: ['systemone'],
+      tasks: ['chat'],
       options: { backend: 'cpu' },
       unknownKey: 'ignored',
       anotherUnknown: 1,
@@ -231,7 +235,7 @@ describe('normalizeEntry', () => {
     expect(created).toEqual({
       id: 'x',
       name: 'x',
-      type: 'custom',
+      type: 'openai',
       enabled: true,
       endpoint: 'http://host',
       manage: true,
@@ -243,7 +247,7 @@ describe('normalizeEntry', () => {
       secretName: 'TOKEN',
       modelProfile: 'openai',
       models: ['a', 'b'],
-      tasks: ['systemone'],
+      tasks: ['chat'],
       options: { backend: 'cpu' },
     });
   });

@@ -3,7 +3,7 @@ import { pick, type Language, type LanguageTable } from 'cortico/core/language.t
 import type { ServiceConfigSection } from './types.ts';
 
 export const SERVICE_ID = 'service';
-export const SERVICE_VERSION = '0.8.0';
+export const SERVICE_VERSION = '0.9.0';
 
 export const SERVICE_DEFAULTS: ServiceConfigSection = {
   enabled: false,

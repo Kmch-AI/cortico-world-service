@@ -39,7 +39,7 @@ describe('服务面板文案', () => {
 
   it('卡片药丸与测试连接有文案', () => {
     const zh = panelText('zh');
-    expect([zh.cardType, zh.cardModel]).toEqual(['type', 'model']);
+    expect([zh.cardType, zh.cardModel]).toEqual(['类型', '模型']);
     expect(zh.testConnection).toBe('测试连接');
     expect(zh.unsaved).toBe('有未保存的改动');
   });

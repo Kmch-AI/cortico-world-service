@@ -1,10 +1,9 @@
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { endpointUrl, systemoneEndpointOf } from '../src/entry.ts';
-import { Supervisor, type LaunchSpec, type SupervisorDeps } from '../src/supervisor.ts';
-import type { ServiceStatus } from '../src/types.ts';
+import { Supervisor } from '../src/supervisor.ts';
+import type { ServiceEntry } from '../src/types.ts';
 import { quietLogger } from './helpers/quiet.ts';
-import { fakeChild, harness, serviceEntry, type FakeChild } from './helpers/service.ts';
+import { harness, serviceEntry } from './helpers/service.ts';
 
 function make(
   patch: Parameters<typeof harness>[0] = {},
@@ -15,82 +14,38 @@ function make(
   return { sup, h };
 }
 
-function healthOk(): Response {
-  return new Response(JSON.stringify({ status: 'ok', models: 1, backend: 'cuda' }), {
-    status: 200,
-    headers: { 'content-type': 'application/json' },
-  });
-}
-
-/** 两个进程的假探活与假拉起；按 URL 区分 llama-server 与 startlux-decide。 */
-function startluxHarness(opts: {
-  primary?: boolean;
-  companion?: boolean;
-  launchHealthy?: boolean;
-} = {}) {
-  const entry = serviceEntry({
+function startluxEntry(patch: Partial<ServiceEntry> = {}): ServiceEntry {
+  return serviceEntry({
     id: 'startlux',
-    name: 'StartLux 0.8B',
-    type: 'llamacpp',
-    endpoint: 'http://127.0.0.1:8081',
-    serverDir: 'C:/llama',
-    tasks: ['systemone'],
-    args: '-m D:/models/startlux.gguf -ngl 99 --parallel 2 --ctx-checkpoints 1',
+    name: 'StartLux Decision',
+    type: 'startlux',
+    endpoint: 'http://127.0.0.1:8091',
+    serverDir: 'C:/StartLux-Decision',
+    binary: '',
+    args: '',
+    models: [],
     options: {
-      modelDir: 'D:/models/StartLux-0.8B',
-      startluxDir: 'C:/startlux',
-      startluxBinary: 'startlux-decide.exe',
-      systemonePort: 8090,
+      modelDir: 'D:/models/StartLux-Decision-v1.1-0.8B-Instant',
+      llamacppUrl: 'http://127.0.0.1:8082',
       thinkMode: 'auto',
       gate: 0.6,
     },
+    ...patch,
   });
-  let primaryHealthy = opts.primary ?? false;
-  let companionHealthy = opts.companion ?? false;
-  const launches: LaunchSpec[] = [];
-  const phases: ServiceStatus[] = [];
-  const children = new Map<'primary' | 'companion', FakeChild>();
-  let clock = 0;
-  const deps: SupervisorDeps = {
-    fetch: (async (input: Parameters<typeof fetch>[0]) => {
-      const url = String(input);
-      if (url.startsWith(endpointUrl(entry))) {
-        return primaryHealthy ? healthOk() : new Response('no', { status: 503 });
-      }
-      if (url.startsWith(systemoneEndpointOf(entry))) {
-        return companionHealthy ? healthOk() : new Response('no', { status: 503 });
-      }
-      return new Response('no', { status: 503 });
-    }) as typeof fetch,
-    launch: (spec) => {
-      launches.push(spec);
-      const role = spec.command.includes('startlux') ? 'companion' : 'primary';
-      const child = fakeChild(role === 'companion' ? 5252 : 4242);
-      children.set(role, child);
-      if (opts.launchHealthy !== false) {
-        if (role === 'primary') primaryHealthy = true;
-        else companionHealthy = true;
-      }
-      return child;
-    },
-    exists: () => true,
-    mkdir: () => {},
-    openLog: () => ({ write: () => {}, close: () => {} }),
-    now: () => clock,
-    sleep: async (ms) => { clock += ms; },
-    onPhase: (status) => { phases.push(status); },
-  };
-  return {
-    entry, deps, launches, phases, children,
-    get primaryHealthy() { return primaryHealthy; },
-    set primaryHealthy(value: boolean) { primaryHealthy = value; },
-    get companionHealthy() { return companionHealthy; },
-    set companionHealthy(value: boolean) { companionHealthy = value; },
-  };
 }
 
-function startluxSupervisor(h: ReturnType<typeof startluxHarness>): Supervisor {
-  return new Supervisor({ entry: h.entry, dataDir: 'C:/data', log: quietLogger, deps: h.deps });
+function startluxSupervisor(
+  entry: ServiceEntry,
+  h: ReturnType<typeof harness>,
+  peers: readonly ServiceEntry[] = [],
+): Supervisor {
+  return new Supervisor({
+    entry,
+    dataDir: 'C:/data',
+    log: quietLogger,
+    peers: () => peers,
+    deps: h.deps,
+  });
 }
 
 describe('Supervisor', () => {
@@ -139,228 +94,194 @@ describe('Supervisor', () => {
     expect(sup.status().detail).toContain('serverDir');
   });
 
-  it('llamacpp 的 StartLux 模型拉起 llama-server 与 startlux-decide', async () => {
-    const h = startluxHarness();
-    const sup = startluxSupervisor(h);
+  it('StartLux Decision 直接拉起 venv 里的 startlux-decide', async () => {
+    const h = harness(startluxEntry(), { healthFails: 1 });
+    const sup = startluxSupervisor(h.entry, h);
     await sup.start();
-    expect(h.launches).toHaveLength(2);
-    const [primary, companion] = h.launches;
-    const llamaExe = process.platform === 'win32' ? 'llama-server.exe' : 'llama-server';
-    const startluxExe = process.platform === 'win32' ? 'startlux-decide.exe' : 'startlux-decide';
-    expect(primary!.command).toBe(join('C:/llama', llamaExe));
-    expect(primary!.args).toEqual([
-      '-m', 'D:/models/startlux.gguf',
-      '-ngl', '99',
-      '--host', '127.0.0.1',
-      '--port', '8081',
-      '--parallel', '1',
-      '--ctx-checkpoints', '0',
-      '-b', '16384',
-      '-ub', '16384',
-      '-c', '20480',
-    ]);
-    expect(companion!.command).toBe(join('C:/startlux', startluxExe));
-    expect(companion!.cwd).toBe('C:/startlux');
-    expect(companion!.args).toEqual([
+    expect(h.launches).toHaveLength(1);
+    const launch = h.launches[0]!;
+    const exe = process.platform === 'win32'
+      ? join('C:/StartLux-Decision', '.venv', 'Scripts', 'startlux-decide.exe')
+      : join('C:/StartLux-Decision', '.venv', 'bin', 'startlux-decide');
+    expect(launch.command).toBe(exe);
+    expect(launch.cwd).toBe('C:/StartLux-Decision');
+    expect(launch.args).toEqual([
       'serve',
-      '--model', 'D:/models/StartLux-0.8B',
+      '--model', 'D:/models/StartLux-Decision-v1.1-0.8B-Instant',
       '--backend', 'llamacpp',
-      '--llamacpp-url', 'http://127.0.0.1:8081',
+      '--llamacpp-url', 'http://127.0.0.1:8082',
       '--host', '127.0.0.1',
-      '--port', '8090',
+      '--port', '8091',
       '--think-mode', 'auto',
       '--gate', '0.6',
     ]);
-    expect(companion!.env).toEqual({ STARTLUX_LLAMACPP_BIDIR: 'server' });
-    expect(sup.status()).toMatchObject({
-      phase: 'online', pid: 4242, companionPid: 5252, tasks: ['systemone'],
+    expect(launch.env).toEqual({ STARTLUX_LLAMACPP_BIDIR: 'server' });
+    expect(sup.status()).toMatchObject({ phase: 'online', pid: 4242, tasks: ['systemone'] });
+    await sup.stop();
+  });
+
+  it('StartLux Decision 可以按条目 id 找 llama.cpp 上游', async () => {
+    const peer = serviceEntry({
+      id: 'llama', name: 'llama.cpp', type: 'llamacpp',
+      endpoint: 'http://127.0.0.1:8082/v1',
+      options: {},
     });
-    await sup.stop();
-  });
-
-  it('llamacpp serve 模式拉起 llama serve --models-dir,并开启任务端点', async () => {
-    const { sup, h } = make({
-      id: 'embed', name: 'embed', type: 'llamacpp',
-      endpoint: 'http://127.0.0.1:8081',
-      serverDir: 'C:/llama',
-      args: '',
-      tasks: ['embeddings', 'rerank'],
+    const entry = startluxEntry({
       options: {
-        launchMode: 'serve', modelsDir: 'D:/models', cacheDir: 'D:/cache',
-        nGpuLayers: 'all', parallel: 4,
+        modelDir: 'D:/models/StartLux-Decision-v1.1-0.8B-Instant',
+        llamacppService: 'llama',
       },
-    }, { healthFails: 1 });
+    });
+    const h = harness(entry, { healthFails: 1 });
+    const sup = startluxSupervisor(entry, h, [peer]);
     await sup.start();
-    const launch = h.launches[0]!;
-    const exe = process.platform === 'win32' ? 'llama.exe' : 'llama';
-    expect(launch.command).toBe(join('C:/llama', exe));
-    expect(launch.args).toEqual([
-      'serve',
-      '--host', '127.0.0.1',
-      '--port', '8081',
-      '--models-dir', 'D:/models',
-      '-ngl', 'all',
-      '--parallel', '4',
-      '--embedding',
-      '--rerank',
-    ]);
-    expect(launch.env).toEqual({ LLAMA_CACHE: 'D:/cache' });
+    const args = h.launches[0]!.args;
+    expect(args[args.indexOf('--llamacpp-url') + 1]).toBe('http://127.0.0.1:8082');
     await sup.stop();
   });
 
-  it('serve 模式缺 llama 时回退到同目录的 llama-server', async () => {
-    const h = harness({
-      id: 'embed', name: 'embed', type: 'llamacpp',
-      endpoint: 'http://127.0.0.1:8081',
-      serverDir: 'C:/llama',
-      args: '',
-      options: { launchMode: 'serve', modelsDir: 'D:/models' },
-    }, { healthFails: 1 });
-    h.deps.exists = (path) => /llama-server(\.exe)?$/.test(path);
-    const sup = new Supervisor({ entry: h.entry, dataDir: 'C:/data', log: quietLogger, deps: h.deps });
-    await sup.start();
-    expect(h.launches[0]!.command).toMatch(/llama-server(\.exe)?$/);
-    await sup.stop();
-  });
-
-  it('llamacpp router 模式用 llama-server --models-dir,不带 serve', async () => {
-    const { sup, h } = make({
-      id: 'embed', name: 'embed', type: 'llamacpp',
-      endpoint: 'http://127.0.0.1:8081',
-      serverDir: 'C:/llama',
-      args: '',
-      tasks: ['embeddings'],
-      options: { launchMode: 'router', modelsDir: 'D:/models' },
-    }, { healthFails: 1 });
-    await sup.start();
-    const launch = h.launches[0]!;
-    const exe = process.platform === 'win32' ? 'llama-server.exe' : 'llama-server';
-    expect(launch.command).toBe(join('C:/llama', exe));
-    expect(launch.args).toEqual([
-      '--host', '127.0.0.1',
-      '--port', '8081',
-      '--models-dir', 'D:/models',
-      '--embeddings',
-    ]);
-    await sup.stop();
-  });
-
-  it('llamacpp single 模式保留 -m,并补 host/port 与任务端点', async () => {
-    const { sup, h } = make({
-      id: 'embed', name: 'embed', type: 'llamacpp',
-      endpoint: 'http://127.0.0.1:8081',
-      serverDir: 'C:/llama',
-      args: '-m D:/models/a.gguf -ngl 99',
-      tasks: ['embeddings'],
-      options: { launchMode: 'single' },
-    }, { healthFails: 1 });
-    await sup.start();
-    const launch = h.launches[0]!;
-    const exe = process.platform === 'win32' ? 'llama-server.exe' : 'llama-server';
-    expect(launch.command).toBe(join('C:/llama', exe));
-    expect(launch.args).toEqual([
-      '-m', 'D:/models/a.gguf',
-      '-ngl', '99',
-      '--host', '127.0.0.1',
-      '--port', '8081',
-      '--embeddings',
-    ]);
-    await sup.stop();
-  });
-
-  it('两端都已在线时接管,不重复拉起', async () => {
-    const h = startluxHarness({ primary: true, companion: true });
-    const sup = startluxSupervisor(h);
-    await sup.start();
-    expect(h.launches).toEqual([]);
-    expect(sup.status()).toMatchObject({ phase: 'online', external: true, pid: null, companionPid: null });
-    await sup.stop();
-  });
-
-  it('只缺 startlux-decide 时只拉起伴生进程', async () => {
-    const h = startluxHarness({ primary: true });
-    const sup = startluxSupervisor(h);
-    await sup.start();
-    expect(h.launches).toHaveLength(1);
-    expect(h.launches[0]!.command).toContain('startlux-decide');
-    expect(sup.status()).toMatchObject({ phase: 'online', pid: 5252, companionPid: 5252 });
-    await sup.stop();
-  });
-
-  it('只缺 llama-server 时只拉起主进程', async () => {
-    const h = startluxHarness({ companion: true });
-    const sup = startluxSupervisor(h);
-    await sup.start();
-    expect(h.launches).toHaveLength(1);
-    expect(h.launches[0]!.command).toContain('llama-server');
-    expect(sup.status()).toMatchObject({ phase: 'online', pid: 4242, companionPid: null });
-    await sup.stop();
-  });
-
-  it('StartLux 缺 options.modelDir 时保持 off,不拉起进程', async () => {
-    const h = startluxHarness();
-    h.entry.options = { ...h.entry.options, modelDir: '' };
-    const sup = startluxSupervisor(h);
+  it('StartLux Decision 缺 modelDir 时保持 off,不拉起进程', async () => {
+    const entry = startluxEntry({ options: { llamacppUrl: 'http://127.0.0.1:8082' } });
+    const h = harness(entry, { healthFails: 1 });
+    const sup = startluxSupervisor(entry, h);
     await sup.start();
     expect(h.launches).toEqual([]);
     expect(sup.status().phase).toBe('off');
     expect(sup.status().detail).toContain('options.modelDir');
   });
 
-  it('StartLux 缺 options.startluxDir 时保持 off,不拉起进程', async () => {
-    const h = startluxHarness();
-    h.entry.options = { ...h.entry.options, startluxDir: '' };
-    const sup = startluxSupervisor(h);
+  it('StartLux Decision 缺 llama.cpp 地址时保持 off', async () => {
+    const entry = startluxEntry({
+      options: { modelDir: 'D:/models/StartLux-Decision-v1.1-0.8B-Instant' },
+    });
+    const h = harness(entry, { healthFails: 1 });
+    const sup = startluxSupervisor(entry, h);
     await sup.start();
     expect(h.launches).toEqual([]);
     expect(sup.status().phase).toBe('off');
-    expect(sup.status().detail).toContain('options.startluxDir');
+    expect(sup.status().detail).toContain('llamacppUrl');
   });
 
   it('Instant 模型忽略自动思考', async () => {
-    const h = startluxHarness();
-    h.entry.options = { ...h.entry.options, instant: true, thinkMode: 'always' };
-    const sup = startluxSupervisor(h);
+    const entry = startluxEntry({
+      options: {
+        modelDir: 'D:/models/StartLux-Decision-v1.1-0.8B-Instant',
+        llamacppUrl: 'http://127.0.0.1:8082',
+        instant: true,
+        thinkMode: 'always',
+      },
+    });
+    const h = harness(entry, { healthFails: 1 });
+    const sup = startluxSupervisor(entry, h);
     await sup.start();
-    const companion = h.launches.find((item) => item.command.includes('startlux'))!;
-    expect(companion.args).not.toContain('--think-mode');
+    expect(h.launches[0]!.args).not.toContain('--think-mode');
     await sup.stop();
   });
 
-  it('伴生进程退出时保留 llama-server,只安排伴生重启', async () => {
-    const h = startluxHarness();
-    const sup = startluxSupervisor(h);
+  it('StartLux 进程退出后按 restartOnExit 安排重启', async () => {
+    const h = harness(startluxEntry(), { healthFails: 1 });
+    const sup = startluxSupervisor(h.entry, h);
     await sup.start();
-    h.children.get('companion')!.emitExit(1);
-    await Promise.resolve();
+    h.child.emitExit(1);
     expect(sup.status().phase).toBe('error');
-    expect(sup.status().detail).toContain('companion');
-    expect(h.children.get('primary')!.killed).toBe(false);
+    expect(sup.status().detail).toContain('exited');
     expect((sup as unknown as { restartTimer: NodeJS.Timeout | null }).restartTimer).not.toBeNull();
     await sup.stop();
   });
 
-  it('llama-server 退出时收掉伴生并安排整组重启', async () => {
-    const h = startluxHarness();
-    const sup = startluxSupervisor(h);
+  it('llamacpp 多模型用 llama-server --models-dir,不带 serve', async () => {
+    const { sup, h } = make({
+      id: 'embed', name: 'embed', type: 'llamacpp',
+      endpoint: 'http://127.0.0.1:8081',
+      serverDir: 'C:/llama',
+      args: '',
+      tasks: ['embeddings', 'rerank'],
+      options: { launchMode: 'router', modelsDir: 'D:/models', cacheDir: 'D:/cache' },
+    }, { healthFails: 1 });
     await sup.start();
-    h.children.get('primary')!.emitExit(1);
-    await Promise.resolve();
-    expect(sup.status().phase).toBe('error');
-    expect(sup.status().detail).toContain('primary');
-    expect(h.children.get('companion')!.killed).toBe(true);
-    expect((sup as unknown as { restartTimer: NodeJS.Timeout | null }).restartTimer).not.toBeNull();
+    const launch = h.launches[0]!;
+    const exe = process.platform === 'win32' ? 'llama-server.exe' : 'llama-server';
+    expect(launch.command).toBe(join('C:/llama', exe));
+    expect(launch.args).toEqual([
+      '--host', '127.0.0.1',
+      '--port', '8081',
+      '--models-dir', 'D:/models',
+      '--embeddings',
+      '--reranking',
+    ]);
+    expect(launch.env).toEqual({ LLAMA_CACHE: 'D:/cache' });
     await sup.stop();
   });
 
-  it('停止结束两个进程', async () => {
-    const h = startluxHarness();
-    const sup = startluxSupervisor(h);
+  it('旧的 serve 启动方式按多模型处理,并清掉残留的 serve 子命令', async () => {
+    const { sup, h } = make({
+      id: 'embed', name: 'embed', type: 'llamacpp',
+      endpoint: 'http://127.0.0.1:8081',
+      serverDir: 'C:/llama',
+      args: 'serve --models-dir D:/models -ngl all',
+      tasks: ['chat'],
+      options: { launchMode: 'serve' },
+    }, { healthFails: 1 });
     await sup.start();
+    const launch = h.launches[0]!;
+    expect(launch.command).toMatch(/llama-server(\.exe)?$/);
+    expect(launch.args).toEqual([
+      '--models-dir', 'D:/models',
+      '-ngl', 'all',
+      '--host', '127.0.0.1',
+      '--port', '8081',
+    ]);
     await sup.stop();
-    expect(h.children.get('primary')!.killed).toBe(true);
-    expect(h.children.get('companion')!.killed).toBe(true);
+  });
+
+  it('llamacpp 单模型从 GGUF 目录补 -m', async () => {
+    const { sup, h } = make({
+      id: 'one', name: 'one', type: 'llamacpp',
+      endpoint: 'http://127.0.0.1:8081',
+      serverDir: 'C:/llama',
+      args: '-ngl 99',
+      tasks: ['chat'],
+      models: ['StartLux-Decision-v1.1-0.8B-Instant-Q8_0'],
+      options: { launchMode: 'single', modelsDir: 'D:/models' },
+    }, { healthFails: 1 });
+    await sup.start();
+    const launch = h.launches[0]!;
+    expect(launch.args).toEqual([
+      '-ngl', '99',
+      '--host', '127.0.0.1',
+      '--port', '8081',
+      '-m', join('D:/models', 'StartLux-Decision-v1.1-0.8B-Instant-Q8_0.gguf'),
+    ]);
+    await sup.stop();
+  });
+
+  it('llamacpp 单模型缺模型时保持 off', async () => {
+    const { sup, h } = make({
+      id: 'one', name: 'one', type: 'llamacpp',
+      endpoint: 'http://127.0.0.1:8081',
+      serverDir: 'C:/llama',
+      args: '',
+      tasks: ['chat'],
+      options: { launchMode: 'single' },
+    }, { healthFails: 1 });
+    await sup.start();
+    expect(h.launches).toEqual([]);
     expect(sup.status().phase).toBe('off');
+    expect(sup.status().detail).toContain('single-model');
+  });
+
+  it('llama.cpp 条目带 systemone 任务时提示迁移,不拉起进程', async () => {
+    const { sup, h } = make({
+      id: 'old', name: 'old', type: 'llamacpp',
+      endpoint: 'http://127.0.0.1:8081',
+      serverDir: 'C:/llama',
+      tasks: ['systemone'],
+      options: {},
+    }, { healthFails: 1 });
+    await sup.start();
+    expect(h.launches).toEqual([]);
+    expect(sup.status().phase).toBe('off');
+    expect(sup.status().detail).toContain('StartLux Decision');
   });
 
   it('外部 systemone 仍只探活,不要求 modelDir', async () => {
@@ -380,12 +301,12 @@ describe('Supervisor', () => {
     await sup.stop();
   });
 
-  it('custom 条目不要求 audiocpp 字段,只用 command/args', async () => {
+  it('没有启动预设的类型只用 command/args', async () => {
     const binary = process.platform === 'win32' ? 'C:/tools/tts-server.exe' : '/tools/tts-server';
     const { sup, h } = make({
       id: 'qwen-tts',
       name: 'Qwen TTS',
-      type: 'custom',
+      type: 'openai',
       endpoint: 'http://127.0.0.1:9010',
       serverDir: '',
       binary,
@@ -405,7 +326,7 @@ describe('Supervisor', () => {
     const { sup, h } = make({
       id: 'empty',
       name: 'Empty',
-      type: 'custom',
+      type: 'openai',
       endpoint: 'http://127.0.0.1:9010',
       serverDir: '',
       binary: '',
@@ -523,6 +444,25 @@ describe('Supervisor', () => {
     expect(seen).toEqual(['http://127.0.0.1:9010/health', 'http://127.0.0.1:9010/v1/models']);
     expect(sup.status().phase).toBe('online');
     expect(sup.status().models).toBe(2);
+    await sup.stop();
+  });
+
+  it('startlux 的 /health 只报 model 名时按一个模型计', async () => {
+    const h = harness(startluxEntry(), { adopt: false });
+    h.deps.fetch = (async (input: Parameters<typeof fetch>[0]) => {
+      const url = String(input);
+      if (url.endsWith('/health')) {
+        return new Response(JSON.stringify({ status: 'ok', model: 'StartLux-Decision-v1.1-0.8B-Instant' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response('no', { status: 404 });
+    }) as typeof fetch;
+    const sup = startluxSupervisor(h.entry, h);
+    await sup.start();
+    expect(sup.status().phase).toBe('online');
+    expect(sup.status().models).toBe(1);
     await sup.stop();
   });
 
