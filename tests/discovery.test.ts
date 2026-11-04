@@ -133,6 +133,27 @@ describe('ModelCatalog discovery', () => {
     expect(found.models[0]?.tasks).toEqual(['embeddings', 'rerank']);
     expect(net.calls.some((call) => /\/v1\/models$/.test(call.url))).toBe(true);
   });
+
+  it('llamacpp 条目的 tasks 覆盖模型目录，StartLux 标成 systemone', async () => {
+    const net = fakeNet({ data: [{ id: 'StartLux-Decision-v1.1-0.8B-Instant' }] });
+    const catalog = new ModelCatalog({ fetch: net.fetch, log: quietLogger });
+    const found = await catalog.refresh(entry({ type: 'llamacpp', tasks: ['systemone'] }));
+    expect(found.models[0]?.tasks).toEqual(['systemone']);
+  });
+
+  it('外部 systemone 条目的默认任务是 systemone', async () => {
+    const net = fakeNet({ data: [{ id: 'jev' }] });
+    const catalog = new ModelCatalog({ fetch: net.fetch, log: quietLogger });
+    const found = await catalog.refresh(entry({ type: 'systemone' }));
+    expect(found.models[0]?.tasks).toEqual(['systemone']);
+  });
+
+  it('上游 chat 任务不覆盖外部 systemone 的路由能力', async () => {
+    const net = fakeNet({ data: [{ id: 'jev', tasks: ['chat'] }] });
+    const catalog = new ModelCatalog({ fetch: net.fetch, log: quietLogger });
+    const found = await catalog.refresh(entry({ type: 'systemone' }));
+    expect(found.models[0]?.tasks).toEqual(['systemone', 'chat']);
+  });
 });
 
 describe('audiocpp server.json + specs metadata', () => {

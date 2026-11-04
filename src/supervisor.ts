@@ -7,7 +7,8 @@ import { createWriteStream, existsSync, mkdirSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import type { Logger } from 'cortico/core/types.ts';
 import {
-  endpointUrl, healthPathOf, healthUrl, hostPort, protocolOf, serverJsonPath,
+  endpointUrl, healthPathOf, healthUrl, hostPort, isStartLuxEntry, protocolOf,
+  primaryOrigin, serverJsonPath, systemoneEndpointOf, systemoneHostPort, tasksOfEntry,
 } from './entry.ts';
 import { apiUrl } from './protocol/http.ts';
 import type { Phase, ServiceEntry, ServiceStatus, ServiceType } from './types.ts';
@@ -25,11 +26,57 @@ export interface LaunchSpec {
   command: string;
   args: string[];
   cwd: string;
+  /** 追加到父进程环境；StartLux 用它设置 STARTLUX_LLAMACPP_BIDIR。 */
+  env?: Record<string, string>;
 }
 
 export interface LogSink {
   write(chunk: string): void;
   close(): void;
+}
+
+type ProcessRole = 'primary' | 'companion';
+
+interface LaunchPlan {
+  role: ProcessRole;
+  spec: LaunchSpec;
+}
+
+/** 参数里是否已有 --name 或 --name=value。 */
+function hasArg(args: readonly string[], name: string): boolean {
+  return args.some((arg) => arg === name || arg.startsWith(`${name}=`));
+}
+
+/** 没有时追加 name value；已有则保留操作者的值。 */
+function ensureArg(args: string[], name: string, value: string): void {
+  if (!hasArg(args, name)) args.push(name, value);
+}
+
+/** 同上，但接受一组同义参数（如 -c / --ctx-size）。 */
+function ensureAnyArg(args: string[], names: readonly string[], value: string): void {
+  if (!names.some((name) => hasArg(args, name))) args.push(names[0]!, value);
+}
+
+/** 移除 name 及其值（同时处理 name=value）。 */
+function stripArg(args: string[], name: string): void {
+  for (let index = args.length - 1; index >= 0; index -= 1) {
+    const arg = args[index]!;
+    if (arg === name) args.splice(index, 2);
+    else if (arg.startsWith(`${name}=`)) args.splice(index, 1);
+  }
+}
+
+/** 强制成 name value；已有 name 或 name=value 时先移除。 */
+function setArg(args: string[], name: string, value: string): void {
+  for (let index = args.length - 1; index >= 0; index -= 1) {
+    const arg = args[index]!;
+    if (arg === name) {
+      args.splice(index, 2);
+    } else if (arg.startsWith(`${name}=`)) {
+      args.splice(index, 1);
+    }
+  }
+  args.push(name, value);
 }
 
 export interface SupervisorDeps {
@@ -58,9 +105,9 @@ const RESTART_DELAYS = [5_000, 15_000, 60_000];
 const HEALTH_TIMEOUT_MS = 3000;
 const DEFAULT_START_TIMEOUT_SEC = 60;
 const DEFAULT_POLL_MS = 5000;
-/** StartLux 预设默认连接的 llama-server 地址。 */
-const DEFAULT_LLAMACPP_URL = 'http://127.0.0.1:8081';
 const THINK_MODES = new Set(['auto', 'never', 'always']);
+/** StartLux Instant 的 GGUF 带非因果注意力标记；stock llama-server 用 server 模式整段读 prompt。 */
+const DEFAULT_BIDIR_MODE = 'server';
 const HEALTHY_STATES = new Set(['ok', 'ready', 'healthy', 'up', 'online']);
 
 function splitArgs(raw: string): string[] {
@@ -100,6 +147,8 @@ export function idleServiceStatus(entry: ServiceEntry): ServiceStatus {
     external: false,
     managed: entry.manage,
     pid: null,
+    companionPid: null,
+    tasks: tasksOfEntry(entry),
     models: 0,
     backend: '',
     baseUrl: endpointUrl(entry),
@@ -113,15 +162,14 @@ function defaultBinary(type: ServiceType): string {
   switch (type) {
     case 'audiocpp': return `audiocpp_server${exe}`;
     case 'llamacpp': return `llama-server${exe}`;
-    case 'systemone': return `startlux-decide${exe}`;
     default: return '';
   }
 }
 
 function defaultBackend(entry: ServiceEntry): string {
   if (entry.type === 'audiocpp') return optionString(entry, 'backend') || 'cuda';
-  // StartLux 本地预设固定接 llama.cpp;只用于状态文案,健康接口给了 backend 时以它为准。
-  if (entry.type === 'systemone' && entry.manage) return 'llamacpp';
+  // StartLux 托管在 llama.cpp 条目下;只用于状态文案,健康接口给了 backend 时以它为准。
+  if (isStartLuxEntry(entry)) return 'llamacpp';
   return '';
 }
 
@@ -141,6 +189,21 @@ function resolveCommand(entry: ServiceEntry): { command: string; checkExists: bo
   return { command, checkExists: looksLikePath(command) };
 }
 
+/** StartLux 伴生进程:默认 startlux-decide，目录来自 options.startluxDir。 */
+function resolveCompanionCommand(
+  entry: ServiceEntry,
+): { command: string; cwd: string; checkExists: boolean } | { error: string } {
+  const dir = optionString(entry, 'startluxDir');
+  const exe = process.platform === 'win32' ? '.exe' : '';
+  const raw = optionString(entry, 'startluxBinary') || `startlux-decide${exe}`;
+  if (!isAbsolute(raw) && !dir) {
+    return { error: 'options.startluxDir is required for a managed StartLux companion' };
+  }
+  const command = isAbsolute(raw) || !dir ? raw : join(dir, raw);
+  const cwd = dir || (isAbsolute(command) ? dirname(command) : process.cwd());
+  return { command, cwd, checkExists: looksLikePath(command) };
+}
+
 function defaultDeps(): SupervisorDeps {
   return {
     fetch: ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => fetch(input, init)) as typeof fetch,
@@ -150,6 +213,7 @@ function defaultDeps(): SupervisorDeps {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
       shell: false,
+      env: spec.env ? { ...process.env, ...spec.env } : process.env,
     }) as unknown as ChildLike,
     exists: (path) => existsSync(path),
     mkdir: (path) => { mkdirSync(path, { recursive: true }); },
@@ -168,7 +232,10 @@ function defaultDeps(): SupervisorDeps {
 export class Supervisor {
   private readonly deps: SupervisorDeps;
   private entry: ServiceEntry;
+  /** 主进程:llama-server / audiocpp 等。 */
   private child: ChildLike | null = null;
+  /** 伴生进程:llama.cpp 条目托管 StartLux 时的 startlux-decide。 */
+  private companionChild: ChildLike | null = null;
   private childExited = false;
   private stopping = false;
   private monitor: NodeJS.Timeout | null = null;
@@ -203,9 +270,11 @@ export class Supervisor {
       entry: this.entry,
       phase: this.phase,
       detail: this.detail,
-      external: this.phase === 'online' && this.child === null,
+      external: this.phase === 'online' && this.child === null && this.companionChild === null,
       managed: this.entry.manage,
-      pid: this.child?.pid ?? null,
+      pid: this.child?.pid ?? this.companionChild?.pid ?? null,
+      companionPid: this.companionChild?.pid ?? null,
+      tasks: tasksOfEntry(this.entry),
       models: this.models,
       backend: this.backend,
       baseUrl: this.baseUrl(),
@@ -223,69 +292,140 @@ export class Supervisor {
   private async startOnce(): Promise<void> {
     if (this.phase === 'online' || this.phase === 'starting') return;
     this.stopping = false;
-    const healthy = await this.health();
+    const withCompanion = isStartLuxEntry(this.entry);
+    const primaryHealth = await this.health();
     if (this.stopping) return;
-    if (healthy) {
-      this.models = healthy.models;
-      this.backend = healthy.backend || defaultBackend(this.entry);
+    const companionHealth = withCompanion ? await this.companionHealth() : null;
+    if (this.stopping) return;
+    const primaryReady = primaryHealth !== null;
+    const companionReady = !withCompanion || companionHealth !== null;
+    if (primaryReady && companionReady) {
+      this.models = primaryHealth.models;
+      this.backend = primaryHealth.backend || defaultBackend(this.entry);
       this.onlineSince = this.deps.now();
-      this.setPhase('online', `${this.backend || this.entry.type} · ${this.models} models`);
+      this.setPhase('online', this.onlineDetail());
       this.startMonitor();
       return;
     }
-    if (this.stopping) return;
     if (!this.entry.manage) {
-      this.setPhase('error', `service is not reachable at ${this.baseUrl()}`);
+      const where = !primaryReady ? this.baseUrl() : systemoneEndpointOf(this.entry);
+      this.setPhase('error', `service is not reachable at ${where}`);
       return;
     }
-    if (this.entry.type === 'systemone' && !optionString(this.entry, 'modelDir')) {
-      this.setPhase('off', 'options.modelDir is required for type systemone');
-      return;
-    }
-
-    const resolved = resolveCommand(this.entry);
-    if ('error' in resolved) {
-      this.setPhase('off', resolved.error);
-      return;
-    }
-    const command = resolved.command;
-    if (resolved.checkExists && !this.deps.exists(command)) {
-      this.setPhase('error', `executable not found: ${command}`);
+    if (this.entry.type === 'systemone' && optionString(this.entry, 'modelDir')
+      && !this.entry.binary?.trim()) {
+      this.setPhase('off', 'local StartLux moved to type llamacpp with tasks ["systemone"]');
       return;
     }
 
-    const serverDir = this.entry.serverDir?.trim() ?? '';
-    const cwd = serverDir || (isAbsolute(command) ? dirname(command) : process.cwd());
-    const args = this.launchArgs();
+    let primaryPlan: LaunchPlan | null = null;
+    if (!primaryReady) {
+      const resolved = resolveCommand(this.entry);
+      if ('error' in resolved) {
+        this.setPhase('off', resolved.error);
+        return;
+      }
+      if (resolved.checkExists && !this.deps.exists(resolved.command)) {
+        this.setPhase('error', `executable not found: ${resolved.command}`);
+        return;
+      }
+      const serverDir = this.entry.serverDir?.trim() ?? '';
+      primaryPlan = {
+        role: 'primary',
+        spec: {
+          command: resolved.command,
+          args: this.launchArgs(),
+          cwd: serverDir || (isAbsolute(resolved.command) ? dirname(resolved.command) : process.cwd()),
+        },
+      };
+    }
+
+    let companionPlan: LaunchPlan | null = null;
+    if (withCompanion && !companionReady) {
+      if (!optionString(this.entry, 'modelDir')) {
+        this.setPhase('off', 'options.modelDir is required for a StartLux (systemone) model');
+        return;
+      }
+      const resolved = resolveCompanionCommand(this.entry);
+      if ('error' in resolved) {
+        this.setPhase('off', resolved.error);
+        return;
+      }
+      if (resolved.checkExists && !this.deps.exists(resolved.command)) {
+        this.setPhase('error', `executable not found: ${resolved.command}`);
+        return;
+      }
+      let args: string[];
+      try {
+        systemoneHostPort(this.entry);
+        args = this.companionArgs();
+      } catch (error) {
+        this.setPhase('off', `invalid StartLux endpoint: ${error instanceof Error ? error.message : String(error)}`);
+        return;
+      }
+      companionPlan = {
+        role: 'companion',
+        spec: {
+          command: resolved.command,
+          args,
+          cwd: resolved.cwd,
+          env: {
+            STARTLUX_LLAMACPP_BIDIR: optionString(this.entry, 'bidirMode') || DEFAULT_BIDIR_MODE,
+          },
+        },
+      };
+    }
 
     const logPath = serviceLogPath(this.entry, this.opts.dataDir);
     try {
       this.deps.mkdir(dirname(logPath));
       this.sink = this.deps.openLog(logPath);
-      this.sink.write(`\n[${new Date(this.deps.now()).toISOString()}] ${command} ${args.join(' ')}\n`);
     } catch (error) {
       this.opts.log.warn(`服务 ${this.entry.id} 日志文件打不开`, { err: error instanceof Error ? error.message : String(error) });
       this.sink = null;
     }
 
-    this.setPhase('starting', `launching ${command}`);
+    const plans = [primaryPlan, companionPlan].filter((plan): plan is LaunchPlan => plan !== null);
+    this.setPhase('starting', `launching ${plans.map((plan) => plan.spec.command).join(', ')}`);
     this.childExited = false;
-    let child: ChildLike;
-    try {
-      child = this.deps.launch({ command, args, cwd });
-    } catch (error) {
-      this.setPhase('error', `launch failed: ${error instanceof Error ? error.message : String(error)}`);
-      this.sink?.close();
-      this.sink = null;
-      return;
+
+    // 先让 llama-server 健康，再起 startlux-decide；后者启动时会连它。
+    if (primaryPlan) {
+      const failure = this.launchPlan(primaryPlan);
+      if (failure) {
+        this.setPhase('error', failure);
+        await this.killChild();
+        this.sink?.close();
+        this.sink = null;
+        return;
+      }
+      const startTimeoutSec = optionNumber(this.entry, 'startTimeoutSec', DEFAULT_START_TIMEOUT_SEC);
+      const primaryOk = await this.waitHealthy(startTimeoutSec * 1000, false);
+      if (this.stopping || this.childExited) {
+        await this.killChild();
+        return;
+      }
+      if (!primaryOk) {
+        this.setPhase('error', `service did not become healthy within ${startTimeoutSec}s`);
+        await this.killChild();
+        this.sink?.close();
+        this.sink = null;
+        return;
+      }
     }
-    this.child = child;
-    this.pipe(child);
-    child.once('exit', (code, signal) => this.onExit(child, code, signal));
-    child.once('error', (error) => this.onExit(child, null, null, error));
+    if (companionPlan) {
+      const failure = this.launchPlan(companionPlan);
+      if (failure) {
+        this.setPhase('error', failure);
+        await this.killChild();
+        this.sink?.close();
+        this.sink = null;
+        return;
+      }
+    }
 
     // 没有 HTTP 协议(none)的条目无法探活:进程起来就算在线。
-    if (healthPathOf(this.entry.type) === null) {
+    if (healthPathOf(this.entry.type) === null && !withCompanion) {
       this.onlineSince = this.deps.now();
       this.setPhase('online', `${this.entry.type} · process running`);
       this.startMonitor();
@@ -293,7 +433,7 @@ export class Supervisor {
     }
 
     const startTimeoutSec = optionNumber(this.entry, 'startTimeoutSec', DEFAULT_START_TIMEOUT_SEC);
-    const ok = await this.waitHealthy(startTimeoutSec * 1000);
+    const ok = await this.waitHealthy(startTimeoutSec * 1000, withCompanion);
     if (this.stopping || this.childExited) {
       await this.killChild();
       return;
@@ -301,24 +441,56 @@ export class Supervisor {
     if (!ok) {
       this.setPhase('error', `service did not become healthy within ${startTimeoutSec}s`);
       await this.killChild();
+      this.sink?.close();
+      this.sink = null;
       return;
     }
     const health = await this.health();
+    const companion = withCompanion ? await this.companionHealth() : null;
     if (this.stopping || this.childExited) {
       await this.killChild();
       return;
     }
-    this.models = health?.models ?? this.models;
-    this.backend = health?.backend || defaultBackend(this.entry);
+    if (!health || (withCompanion && !companion)) {
+      this.setPhase('error', `service did not become healthy within ${startTimeoutSec}s`);
+      await this.killChild();
+      this.sink?.close();
+      this.sink = null;
+      return;
+    }
+    this.models = health.models;
+    this.backend = health.backend || defaultBackend(this.entry);
     // 计数只在稳定在线 60 秒后归零(refresh),否则 5s/15s/60s 退避会退化成无限 5s 重试。
     this.onlineSince = this.deps.now();
-    this.setPhase('online', `${this.backend || this.entry.type} · ${this.models} models`);
+    this.setPhase('online', this.onlineDetail());
     this.startMonitor();
   }
 
-  /** audiocpp 与 systemone 有启动预设;其余类型只用条目自己的 args。 */
+  private onlineDetail(): string {
+    const base = `${this.backend || this.entry.type} · ${this.models} models`;
+    return isStartLuxEntry(this.entry) ? `${base} + StartLux` : base;
+  }
+
+  /** 拉起一个进程并把退出回调接到同一组状态；失败只返回文本，不抛错。 */
+  private launchPlan(plan: LaunchPlan): string | null {
+    let child: ChildLike;
+    try {
+      child = this.deps.launch(plan.spec);
+    } catch (error) {
+      return `launch failed (${plan.role}): ${error instanceof Error ? error.message : String(error)}`;
+    }
+    if (plan.role === 'primary') this.child = child;
+    else this.companionChild = child;
+    this.sink?.write(`\n[${new Date(this.deps.now()).toISOString()}] [${plan.role}] ${plan.spec.command} ${plan.spec.args.join(' ')}\n`);
+    this.pipe(child, plan.role);
+    child.once('exit', (code, signal) => this.onExit(child, code, signal));
+    child.once('error', (error) => this.onExit(child, null, null, error));
+    return null;
+  }
+
+  /** audiocpp / llamacpp 有启动预设;其余类型只用条目自己的 args。 */
   private launchArgs(): string[] {
-    if (this.entry.type === 'systemone') return this.systemoneArgs();
+    if (this.entry.type === 'llamacpp') return this.llamacppArgs();
     if (this.entry.type !== 'audiocpp') return splitArgs(this.entry.args ?? '');
 
     const { host, port } = hostPort(this.entry);
@@ -342,33 +514,66 @@ export class Supervisor {
   }
 
   /**
-   * StartLux 预设:startlux-decide serve 连另一条 llamacpp 条目拉起的 llama-server。
-   * 参数顺序固定,便于测试与日志核对;条目 args 最后追加。
+   * llama.cpp 条目:普通 embedding/rerank 模型只用条目 args。
+   * StartLux 模型补上 Instant 需要的单 slot 与整段 prompt 参数;操作者显式给的值优先。
    */
-  private systemoneArgs(): string[] {
-    const modelDir = optionString(this.entry, 'modelDir');
-    const llamacppUrl = optionString(this.entry, 'llamacppUrl') || DEFAULT_LLAMACPP_URL;
+  private llamacppArgs(): string[] {
+    const args = splitArgs(this.entry.args ?? '');
+    if (!isStartLuxEntry(this.entry)) return args;
+    // StartLux 的思考参数属于伴生进程，llama-server 不认识。
+    stripArg(args, '--think-mode');
+    stripArg(args, '--gate');
+
     const { host, port } = hostPort(this.entry);
+    // 条目 endpoint 是探活与路由的唯一地址；args 里的 host/port 不能和它打架。
+    setArg(args, '--host', host);
+    setArg(args, '--port', String(port));
+    // Instant 的 prompt 必须整段、单 slot 评估;这两项不能让操作者用默认值覆盖。
+    setArg(args, '--parallel', '1');
+    setArg(args, '--ctx-checkpoints', '0');
+    ensureAnyArg(args, ['-b', '--batch-size'], '16384');
+    ensureAnyArg(args, ['-ub', '--ubatch-size'], '16384');
+    ensureAnyArg(args, ['-c', '--ctx-size'], '20480');
+    return args;
+  }
+
+  /** 伴生 startlux-decide:把 typed systemone 请求翻译成 llama-server 的 prompt/readout。 */
+  private companionArgs(): string[] {
+    const modelDir = optionString(this.entry, 'modelDir');
+    const { host, port } = systemoneHostPort(this.entry);
     const args = [
       'serve',
       '--model', modelDir,
       '--backend', 'llamacpp',
-      '--llamacpp-url', llamacppUrl,
+      '--llamacpp-url', primaryOrigin(this.entry),
       '--host', host,
       '--port', String(port),
     ];
     const thinkMode = optionString(this.entry, 'thinkMode');
-    if (THINK_MODES.has(thinkMode)) args.push('--think-mode', thinkMode);
+    const instant = optionBoolean(this.entry, 'instant', false);
+    if (THINK_MODES.has(thinkMode) && !(instant && thinkMode !== 'never')) {
+      args.push('--think-mode', thinkMode);
+    } else if (instant && THINK_MODES.has(thinkMode)) {
+      this.opts.log.warn('StartLux Instant 模型不接受自动思考，已忽略 --think-mode', {
+        id: this.entry.id, thinkMode,
+      });
+    }
     const gate = this.entry.options?.gate;
     if (typeof gate === 'number' && Number.isFinite(gate)) args.push('--gate', String(gate));
-    args.push(...splitArgs(this.entry.args ?? ''));
+    const extra = splitArgs(optionString(this.entry, 'startluxArgs'));
+    for (const managed of ['--model', '--backend', '--llamacpp-url', '--host', '--port',
+      '--think-mode', '--gate']) {
+      stripArg(extra, managed);
+    }
+    if (instant) stripArg(extra, '--think-mode');
+    args.push(...extra);
     return args;
   }
 
-  private pipe(child: ChildLike): void {
+  private pipe(child: ChildLike, role: ProcessRole): void {
     const write = (chunk: Buffer | string): void => {
       const text = chunk.toString();
-      this.sink?.write(text);
+      this.sink?.write(`[${role}] ${text}`);
       this.opts.log.debug(this.entry.id, { line: text.trim().slice(0, 400) });
     };
     child.stdout?.on('data', write);
@@ -376,15 +581,27 @@ export class Supervisor {
   }
 
   private onExit(child: ChildLike, code: number | null, signal: NodeJS.Signals | null, error?: Error): void {
-    if (this.child !== child) return;
-    this.child = null;
+    const role: ProcessRole | null = child === this.child
+      ? 'primary'
+      : child === this.companionChild ? 'companion' : null;
+    if (!role) return;
+    if (role === 'primary') this.child = null;
+    else this.companionChild = null;
     this.childExited = true;
     if (this.stopping) return;
-    const reason = error ? error.message : `exited (${code ?? signal ?? 'unknown'})`;
+    const reason = error
+      ? `${role} ${error.message}`
+      : `${role} exited (${code ?? signal ?? 'unknown'})`;
     this.onlineSince = null;
     this.setPhase('error', reason);
-    this.sink?.close();
-    this.sink = null;
+    if (role === 'primary') {
+      // 主进程退出：自己拉起的伴生也收掉，整组重启。
+      void this.killChild();
+      this.sink?.close();
+      this.sink = null;
+    }
+    // 伴生退出：保留已经加载好的 llama-server，只重启伴生。
+    if (this.restartTimer) return;
     if (this.entry.restartOnExit && this.restarts < RESTART_DELAYS.length) {
       const delay = RESTART_DELAYS[this.restarts]!;
       this.restarts += 1;
@@ -397,11 +614,8 @@ export class Supervisor {
     }
   }
 
-  private async killChild(): Promise<void> {
-    const child = this.child;
+  private async killOne(child: ChildLike | null): Promise<void> {
     if (!child) return;
-    this.child = null;
-    this.childExited = true;
     await new Promise<void>((resolve) => {
       let done = false;
       const finish = (): void => { if (done) return; done = true; resolve(); };
@@ -415,12 +629,24 @@ export class Supervisor {
     });
   }
 
-  private async waitHealthy(timeoutMs: number): Promise<boolean> {
+  private async killChild(): Promise<void> {
+    const primary = this.child;
+    const companion = this.companionChild;
+    this.child = null;
+    this.companionChild = null;
+    this.childExited = true;
+    // 先停伴生，避免它在 llama-server 退出后继续报错。
+    await this.killOne(companion);
+    await this.killOne(primary);
+  }
+
+  private async waitHealthy(timeoutMs: number, withCompanion: boolean): Promise<boolean> {
     const deadline = this.deps.now() + timeoutMs;
     while (this.deps.now() < deadline) {
-      if (this.childExited) return false;
+      if (this.stopping || this.childExited) return false;
       const health = await this.health();
-      if (health) {
+      const companion = withCompanion ? await this.companionHealth() : null;
+      if (health && (!withCompanion || companion)) {
         this.models = health.models;
         this.backend = health.backend || defaultBackend(this.entry);
         return true;
@@ -428,6 +654,18 @@ export class Supervisor {
       await this.deps.sleep(500);
     }
     return false;
+  }
+
+  /** StartLux 伴生进程的 `/health`；404 时回退 `/v1/models`。 */
+  private async companionHealth(): Promise<{ models: number; backend: string } | null> {
+    const base = systemoneEndpointOf(this.entry);
+    const first = await this.probe(`${base}/health`);
+    if (first.health) return first.health;
+    if (first.status === 404) {
+      const fallback = await this.probe(apiUrl(base, '/models'));
+      return fallback.health;
+    }
+    return null;
   }
 
   private async probe(url: string): Promise<{
@@ -484,20 +722,25 @@ export class Supervisor {
   /** 探一次活,只改状态,不拉起进程。 */
   async refresh(): Promise<void> {
     if (this.stopping || this.phase === 'starting') return;
-    if (healthPathOf(this.entry.type) === null) return;
+    const withCompanion = isStartLuxEntry(this.entry);
+    if (healthPathOf(this.entry.type) === null && !withCompanion) return;
     const health = await this.health();
+    const companion = withCompanion ? await this.companionHealth() : null;
     if (this.stopping) return;
-    if (health) {
+    if (health && (!withCompanion || companion)) {
       this.models = health.models;
       this.backend = health.backend || defaultBackend(this.entry);
       if (this.phase !== 'online') {
         this.onlineSince = this.deps.now();
-        this.setPhase('online', `${this.backend || this.entry.type} · ${health.models} models`);
+        this.setPhase('online', this.onlineDetail());
       }
       if (this.onlineSince !== null && this.deps.now() - this.onlineSince > 60_000) this.restarts = 0;
       return;
     }
-    if (this.phase === 'online') this.setPhase('error', `health check failed at ${this.baseUrl()}`);
+    if (this.phase === 'online') {
+      const where = !health ? this.baseUrl() : systemoneEndpointOf(this.entry);
+      this.setPhase('error', `health check failed at ${where}`);
+    }
   }
 
   private startMonitor(): void {

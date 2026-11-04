@@ -175,6 +175,7 @@ interface FormSeed {
   secretName: string;
   modelProfile: string;
   models: string;
+  tasks: string;
   optionsText: string;
 }
 
@@ -185,9 +186,13 @@ interface RuntimeFields {
   idleUnloadMs: string;
   ui: boolean;
   modelDir: string;
-  llamacppUrl: string;
+  startluxDir: string;
+  startluxBinary: string;
+  startluxArgs: string;
+  systemonePort: string;
   thinkMode: string;
   gate: string;
+  instant: boolean;
 }
 
 interface DraftState extends FormSeed, RuntimeFields {}
@@ -243,6 +248,7 @@ function newDraft(T: PanelText): DraftState {
     secretName: '',
     modelProfile: '',
     models: '',
+    tasks: '',
     optionsText: '',
     backend: '',
     device: '',
@@ -250,9 +256,13 @@ function newDraft(T: PanelText): DraftState {
     idleUnloadMs: '',
     ui: true,
     modelDir: '',
-    llamacppUrl: '',
+    startluxDir: '',
+    startluxBinary: '',
+    startluxArgs: '',
+    systemonePort: '',
     thinkMode: '',
     gate: '',
+    instant: false,
   };
 }
 
@@ -271,6 +281,7 @@ function seedOfEntry(entry: ServiceEntry): FormSeed {
     secretName: entry.secretName ?? '',
     modelProfile: entry.modelProfile ?? '',
     models: (entry.models ?? []).join(', '),
+    tasks: (entry.tasks ?? []).join(', '),
     optionsText: entry.options && Object.keys(entry.options).length
       ? JSON.stringify(entry.options, null, 2)
       : '',
@@ -297,9 +308,13 @@ function runtimeOfOptions(options: Record<string, unknown> | null): RuntimeField
     idleUnloadMs: numberText(options?.idleUnloadMs),
     ui: options?.ui !== false,
     modelDir: typeof options?.modelDir === 'string' ? options.modelDir : '',
-    llamacppUrl: typeof options?.llamacppUrl === 'string' ? options.llamacppUrl : '',
+    startluxDir: typeof options?.startluxDir === 'string' ? options.startluxDir : '',
+    startluxBinary: typeof options?.startluxBinary === 'string' ? options.startluxBinary : '',
+    startluxArgs: typeof options?.startluxArgs === 'string' ? options.startluxArgs : '',
+    systemonePort: numberText(options?.systemonePort),
     thinkMode: typeof options?.thinkMode === 'string' ? options.thinkMode : '',
     gate: numberText(options?.gate),
+    instant: options?.instant === true,
   };
 }
 
@@ -356,12 +371,27 @@ function buildServiceForm(
   idleUnloadMs.step = '1';
   const uiBox = ui.checkbox(T.flagUi, { checked: runtime.ui });
 
-  const modelDir = ui.input({ value: runtime.modelDir, cls: 'mono' });
-  const llamacppUrl = ui.input({
-    value: runtime.llamacppUrl,
-    cls: 'mono',
-    placeholder: 'http://127.0.0.1:8081',
+  const taskOptions = [
+    { value: 'embeddings,rerank', label: T.taskEmbeddings },
+    { value: 'embeddings', label: 'Embeddings' },
+    { value: 'rerank', label: 'Rerank' },
+    { value: 'systemone', label: T.taskSystemone },
+  ];
+  if (seed.tasks && !taskOptions.some((option) => option.value === seed.tasks)) {
+    taskOptions.push({ value: seed.tasks, label: seed.tasks });
+  }
+  const tasks = ui.select({
+    value: seed.tasks || 'embeddings,rerank',
+    options: taskOptions,
   });
+  const modelDir = ui.input({ value: runtime.modelDir, cls: 'mono' });
+  const startluxDir = ui.input({ value: runtime.startluxDir });
+  const startluxBinary = ui.input({ value: runtime.startluxBinary, cls: 'mono', placeholder: 'startlux-decide.exe' });
+  const startluxArgs = ui.input({ value: runtime.startluxArgs, cls: 'mono' });
+  const systemonePort = ui.input({ type: 'number', value: runtime.systemonePort });
+  systemonePort.min = '1';
+  systemonePort.max = '65535';
+  systemonePort.step = '1';
   const thinkMode = ui.select({
     value: runtime.thinkMode,
     options: [{ value: '', label: T.defaultValue }, 'auto', 'never', 'always'],
@@ -370,6 +400,7 @@ function buildServiceForm(
   gate.min = '0';
   gate.max = '1';
   gate.step = '0.01';
+  const instant = ui.checkbox(T.flagInstant, { checked: runtime.instant });
 
   const secretName = ui.input({
     value: seed.secretName,
@@ -460,9 +491,13 @@ function buildServiceForm(
   systemoneGroup.append(
     ui.h('h4', 'svc-group-title', T.systemonePreset),
     fieldBlock(ui, T.fieldModelDir, pathRow(modelDir, 'directory'), T.modelDirNote),
-    fieldBlock(ui, T.fieldLlamacppUrl, llamacppUrl, T.llamacppUrlNote),
-    fieldBlock(ui, T.fieldThinkMode, thinkMode),
+    fieldBlock(ui, T.fieldStartluxDir, pathRow(startluxDir, 'directory'), T.startluxDirNote),
+    fieldBlock(ui, T.fieldStartluxBinary, pathRow(startluxBinary, 'file'), T.startluxBinaryNote),
+    fieldBlock(ui, T.fieldSystemonePort, systemonePort, T.systemonePortNote),
+    fieldBlock(ui, T.fieldThinkMode, thinkMode, T.thinkModeNote),
     fieldBlock(ui, T.fieldGate, gate, T.gateNote),
+    fieldBlock(ui, T.fieldStartluxArgs, startluxArgs, T.startluxArgsNote),
+    checkBlock(ui, instant, T.instantNote),
   );
   runtimeSection.body.append(systemoneGroup);
 
@@ -482,8 +517,10 @@ function buildServiceForm(
   runtimeSection.body.append(audiocppGroup);
 
   const modelsSection = numberedSection(ui, flow, `${prefix}-models`, T.sectionModels, true);
+  const tasksField = fieldBlock(ui, T.fieldTasks, tasks, T.tasksNote);
   const profileField = fieldBlock(ui, T.fieldModelProfile, modelProfile, T.modelProfileNote);
   modelsSection.body.append(
+    tasksField,
     profileField,
     fieldBlock(ui, T.fieldModels, models, T.modelsNote),
   );
@@ -499,14 +536,17 @@ function buildServiceForm(
   function syncVisibility(): void {
     const current = type.value as ServiceType;
     const managed = manage.checked;
+    const startlux = current === 'llamacpp' && tasks.value === 'systemone';
     processGroup.hidden = !managed;
-    systemoneGroup.hidden = !(managed && current === 'systemone');
-    tuningGroup.hidden = !(managed && (current === 'audiocpp' || current === 'llamacpp'));
+    systemoneGroup.hidden = !(managed && startlux);
+    tuningGroup.hidden = !(managed && (current === 'audiocpp' || (current === 'llamacpp' && !startlux)));
     audiocppGroup.hidden = !(managed && current === 'audiocpp');
+    tasksField.hidden = current !== 'llamacpp';
     profileField.hidden = current === 'llamacpp';
   }
 
   manage.input.addEventListener('change', syncVisibility, { signal: ctx.signal });
+  tasks.addEventListener('change', syncVisibility, { signal: ctx.signal });
   type.addEventListener('change', () => {
     const next = type.value as ServiceType;
     typeNoteEl.textContent = typeNote(T, next);
@@ -539,6 +579,7 @@ function buildServiceForm(
         secretName: secretName.value,
         modelProfile: modelProfile.value,
         models: models.value,
+        tasks: tasks.value,
         optionsText: optionsArea.value,
       },
       runtime: {
@@ -548,9 +589,13 @@ function buildServiceForm(
         idleUnloadMs: idleUnloadMs.value,
         ui: uiBox.checked,
         modelDir: modelDir.value,
-        llamacppUrl: llamacppUrl.value,
+        startluxDir: startluxDir.value,
+        startluxBinary: startluxBinary.value,
+        startluxArgs: startluxArgs.value,
+        systemonePort: systemonePort.value,
         thinkMode: thinkMode.value,
         gate: gate.value,
+        instant: instant.checked,
       },
     };
   }
@@ -577,35 +622,69 @@ function buildServiceForm(
       options = { ...parsed };
     }
 
-    if (manage.checked && typeValue === 'systemone') {
-      const modelDirValue = modelDir.value.trim();
-      if (!modelDirValue) return { error: T.badModelDir };
-      options.modelDir = modelDirValue;
+    const startlux = manage.checked && typeValue === 'llamacpp' && tasks.value === 'systemone';
+    if (manage.checked && typeValue === 'llamacpp') {
+      if (startlux) {
+        const modelDirValue = modelDir.value.trim();
+        if (!modelDirValue) return { error: T.badModelDir };
+        options.modelDir = modelDirValue;
 
-      const llamacppUrlValue = llamacppUrl.value.trim();
-      if (llamacppUrlValue) options.llamacppUrl = llamacppUrlValue;
-      else delete options.llamacppUrl;
+        const startluxDirValue = startluxDir.value.trim();
+        if (!startluxDirValue) return { error: T.badStartluxDir };
+        options.startluxDir = startluxDirValue;
 
-      const thinkModeValue = thinkMode.value.trim();
-      if (thinkModeValue) {
-        if (thinkModeValue !== 'auto' && thinkModeValue !== 'never' && thinkModeValue !== 'always') {
-          return { error: T.badThinkMode };
+        const startluxBinaryValue = startluxBinary.value.trim();
+        if (startluxBinaryValue) options.startluxBinary = startluxBinaryValue;
+        else delete options.startluxBinary;
+
+        const startluxArgsValue = startluxArgs.value.trim();
+        if (startluxArgsValue) options.startluxArgs = startluxArgsValue;
+        else delete options.startluxArgs;
+
+        const portText = systemonePort.value.trim();
+        if (portText) {
+          const portValue = Number(portText);
+          if (!Number.isInteger(portValue) || portValue < 1 || portValue > 65535) {
+            return { error: T.badSystemonePort };
+          }
+          options.systemonePort = portValue;
+        } else {
+          delete options.systemonePort;
         }
-        options.thinkMode = thinkModeValue;
+
+        const thinkModeValue = thinkMode.value.trim();
+        if (thinkModeValue) {
+          if (thinkModeValue !== 'auto' && thinkModeValue !== 'never' && thinkModeValue !== 'always') {
+            return { error: T.badThinkMode };
+          }
+          options.thinkMode = thinkModeValue;
+        } else {
+          delete options.thinkMode;
+        }
+
+        const gateText = gate.value.trim();
+        if (gateText) {
+          const gateValue = Number(gateText);
+          if (!Number.isFinite(gateValue) || gateValue < 0 || gateValue > 1) {
+            return { error: T.badGate };
+          }
+          options.gate = gateValue;
+        } else {
+          delete options.gate;
+        }
+        if (instant.checked) options.instant = true;
+        else delete options.instant;
       } else {
+        delete options.modelDir;
+        delete options.startluxDir;
+        delete options.startluxBinary;
+        delete options.startluxArgs;
+        delete options.systemonePort;
         delete options.thinkMode;
-      }
-
-      const gateText = gate.value.trim();
-      if (gateText) {
-        const gateValue = Number(gateText);
-        if (!Number.isFinite(gateValue) || gateValue < 0 || gateValue > 1) {
-          return { error: T.badGate };
-        }
-        options.gate = gateValue;
-      } else {
         delete options.gate;
+        delete options.instant;
       }
+      delete options.llamacppUrl;
     }
 
     if (manage.checked && (typeValue === 'audiocpp' || typeValue === 'llamacpp')) {
@@ -654,6 +733,9 @@ function buildServiceForm(
         secretName: secretName.value.trim() || null,
         modelProfile: modelProfile.value.trim() || null,
         models: list.length ? list : null,
+        tasks: typeValue === 'llamacpp'
+          ? tasks.value.split(',').map((item) => item.trim()).filter(Boolean)
+          : null,
         options: Object.keys(options).length ? options : null,
       },
     };
@@ -959,9 +1041,13 @@ const servicesPanel: WebUiPanel = {
           idleUnloadMs: current.idleUnloadMs,
           ui: current.ui,
           modelDir: current.modelDir,
-          llamacppUrl: current.llamacppUrl,
+          startluxDir: current.startluxDir,
+          startluxBinary: current.startluxBinary,
+          startluxArgs: current.startluxArgs,
+          systemonePort: current.systemonePort,
           thinkMode: current.thinkMode,
           gate: current.gate,
+          instant: current.instant,
         },
         onDirty: () => { dirtyEl.hidden = false; },
         onChange: (next) => {
@@ -1050,6 +1136,7 @@ const servicesPanel: WebUiPanel = {
           { k: T.rowAddress, v: mono(current.baseUrl || T.none) },
           { k: T.rowModels, v: mono(String(current.models)) },
           { k: T.rowPid, v: mono(current.pid === null ? T.none : String(current.pid)) },
+          ...(current.companionPid ? [{ k: T.rowCompanionPid, v: mono(String(current.companionPid)) }] : []),
           { k: T.rowRestarts, v: mono(String(current.restarts)) },
           { k: T.rowToken, v: tokenCell(current.entry.tokenSet, current.entry.secretName) },
         ]));

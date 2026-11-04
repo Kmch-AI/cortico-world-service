@@ -17,6 +17,8 @@ const MAX_TOKEN_NAME = 128;
 const MAX_MODEL = 200;
 const MAX_MODELS = 200;
 const MAX_OPTIONS_BYTES = 64 * 1024;
+/** 已知模型任务；拼错时不静默变成无人接的条目。 */
+const SERVICE_TASKS = new Set(['tts', 'sing', 'systemone', 'embeddings', 'rerank']);
 
 function invalid(message: string, param?: string): ServiceError {
   return ServiceError.invalid(message, param);
@@ -189,7 +191,8 @@ export function normalizeEntry(input: unknown, base?: ServiceEntry): ServiceEntr
     type,
     enabled: flag(input, 'enabled', base?.enabled ?? true),
     endpoint,
-    manage: flag(input, 'manage', base?.manage ?? true),
+    // systemone 是外部 Jev 端点；本地 StartLux 用 llamacpp 条目。创建时默认不托管。
+    manage: flag(input, 'manage', base?.manage ?? type !== 'systemone'),
     autoStart: flag(input, 'autoStart', base?.autoStart ?? true),
     restartOnExit: flag(input, 'restartOnExit', base?.restartOnExit ?? true),
   };
@@ -208,6 +211,15 @@ export function normalizeEntry(input: unknown, base?: ServiceEntry): ServiceEntr
   if (modelProfile !== undefined) entry.modelProfile = modelProfile;
   const models = 'models' in input ? stringListOf(input.models, 'models') : base?.models;
   if (models !== undefined) entry.models = models;
+  const tasks = 'tasks' in input ? stringListOf(input.tasks, 'tasks') : base?.tasks;
+  if (tasks !== undefined) {
+    const unique: string[] = [];
+    for (const task of tasks) {
+      if (!SERVICE_TASKS.has(task)) throw invalid(`unknown model task: ${task}`, 'tasks');
+      if (!unique.includes(task)) unique.push(task);
+    }
+    entry.tasks = unique;
+  }
   const options = 'options' in input ? jsonObjectOf(input.options, 'options', MAX_OPTIONS_BYTES) : base?.options;
   if (options !== undefined) entry.options = options;
 

@@ -7,7 +7,7 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { basename, extname, join } from 'node:path';
 import type { Logger } from 'cortico/core/types.ts';
-import { endpointUrl, protocolOf, serverJsonPath } from '../entry.ts';
+import { endpointUrl, protocolOf, serverJsonPath, tasksOfEntry } from '../entry.ts';
 import { errorMessage } from '../errors.ts';
 import {
   apiUrl, authHeaders, errorSnippet, parseJson, parseVoices, timedFetch,
@@ -49,7 +49,6 @@ const DEFAULT_MAX_MODELS = 200;
 const DEFAULT_MAX_VOICE_MODELS = 50;
 const VOICE_BATCH = 8;
 const TASK_TTS = 'tts';
-const TASK_SING = 'sing';
 const PARAMETER_TYPES: ReadonlySet<string> = new Set<ModelParameterType>([
   'string', 'enum', 'bool', 'int', 'float', 'string_list', 'path', 'path_list',
 ]);
@@ -73,14 +72,9 @@ function defaultIo(opts: CatalogOptions): DiscoveryIo {
   };
 }
 
-/** 上游没声明 tasks 时按协议给默认值;llamacpp 与 systemone 不是语音模型。 */
+/** 上游没声明 tasks 时按条目配置或服务类型给默认值。 */
 function defaultTasksOf(entry: ServiceEntry): string[] {
-  switch (protocolOf(entry)) {
-    case 'sing': return [TASK_SING];
-    case 'llamacpp': return ['embeddings', 'rerank'];
-    case 'systemone': return ['chat'];
-    default: return [TASK_TTS];
-  }
+  return tasksOfEntry(entry);
 }
 
 function tasksOf(raw: Record<string, unknown>, fallback: string[]): string[] {
@@ -89,7 +83,8 @@ function tasksOf(raw: Record<string, unknown>, fallback: string[]): string[] {
       : typeof raw.category === 'string' ? [raw.category] : [];
   const tasks = source.filter((item): item is string => typeof item === 'string' && item.trim() !== '')
     .map((item) => item.trim());
-  return tasks.length ? tasks : fallback;
+  // 上游的 tasks 是补充，不覆盖条目的有效任务；否则外部 systemone 的 chat 会丢掉 systemone 路由能力。
+  return [...new Set([...fallback, ...tasks])];
 }
 
 function voicesOf(raw: Record<string, unknown>): string[] {
@@ -266,7 +261,9 @@ function enrichModel(entry: ServiceEntry, model: ModelRecord, meta: SpecMeta | u
   const next: ModelRecord = {
     ...model,
     ...(meta?.label ? { label: meta.label } : {}),
-    ...(meta && meta.tasks.length ? { tasks: meta.tasks } : {}),
+    ...(meta && meta.tasks.length
+      ? { tasks: [...new Set([...model.tasks, ...meta.tasks])] }
+      : {}),
     voices: [...new Set([...model.voices, ...(meta?.voices ?? [])])],
   };
   if (parameters) next.parameters = parameters;

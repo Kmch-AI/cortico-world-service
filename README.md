@@ -2,7 +2,7 @@
 
 Kmch AI · 服务:托管本机推理服务，并把它们收在一条 OpenAI 形状的语音接口后面。audiocpp 只是其中一种后端。
 
-0.6.0 有通用进程托管与多条目编排，也有统一网关：`/health`、`/v1/models`、`/v1/audio/voices`、`/v1/audio/speech`、`/v1/audio/sing`、`/v1/systemone`、`/v1/embeddings`、`/v1/rerank` 都接在同一组服务条目上。条目只填名称与端点，协议、主机端口与健康路径由类型推导；模型差异用数据 profile 表达，新增模型多数只加配置。systemone 托管时走 StartLux 本地预设：一条 llamacpp 条目拉起 `llama-server`，一条 systemone 条目拉起 `startlux-decide`。audiocpp 的默认端口是 8080。
+0.7.0 有通用进程托管与多条目编排，也有统一网关：`/health`、`/v1/models`、`/v1/audio/voices`、`/v1/audio/speech`、`/v1/audio/sing`、`/v1/systemone`、`/v1/embeddings`、`/v1/rerank` 都接在同一组服务条目上。一个条目就是一个模型部署：`tasks` 决定它接 `embeddings` / `rerank`，还是 `systemone`（StartLux）。llama.cpp 的 StartLux 模型由同一条目托管 `llama-server` 与伴生 `startlux-decide`；外部 SystemOne 服务仍用 `type: systemone` 的端点。audiocpp 的默认端口是 8080。
 
 ## 为什么是 World，不是 provider
 
@@ -56,8 +56,8 @@ corepack pnpm add "D:/path/to/cortico-world-service" --ignore-workspace
           "args": "--port 9010 --model qwen"
         },
         {
-          "id": "startlux-llamacpp",
-          "name": "StartLux llama.cpp",
+          "id": "startlux-08b",
+          "name": "StartLux 0.8B Instant",
           "type": "llamacpp",
           "enabled": true,
           "endpoint": "http://127.0.0.1:8081",
@@ -65,23 +65,14 @@ corepack pnpm add "D:/path/to/cortico-world-service" --ignore-workspace
           "autoStart": true,
           "restartOnExit": true,
           "serverDir": "D:/AI/llama.cpp",
-          "args": "-m D:/models/StartLux-Decision.gguf --host 127.0.0.1 --port 8081"
-        },
-        {
-          "id": "startlux",
-          "name": "StartLux",
-          "type": "systemone",
-          "enabled": true,
-          "endpoint": "http://127.0.0.1:8090",
-          "manage": true,
-          "autoStart": true,
-          "restartOnExit": true,
-          "serverDir": "D:/AI/startlux-decide",
+          "args": "-m D:/models/StartLux-Decision-v1.1-0.8B-Instant-Q8_0.gguf -ngl 99",
+          "tasks": ["systemone"],
           "options": {
-            "modelDir": "D:/models/StartLux-Decision",
-            "llamacppUrl": "http://127.0.0.1:8081",
-            "thinkMode": "auto",
-            "gate": 0.6
+            "modelDir": "D:/models/StartLux-Decision-v1.1-0.8B-Instant",
+            "startluxDir": "C:/venvs/startlux/Scripts",
+            "startluxBinary": "startlux-decide.exe",
+            "systemonePort": 8090,
+            "instant": true
           }
         }
       ]
@@ -106,6 +97,13 @@ corepack pnpm add "D:/path/to/cortico-world-service" --ignore-workspace
 
 `host` 不在标准表单里；要改就编辑配置文件。
 
+### 服务、模型与任务
+
+- **服务条目**是一个模型部署：一个 llama.cpp 条目挂一个 GGUF，一个 audiocpp 条目挂一个语音模型。
+- **模型**是条目里的 `models` / `/v1/models` 结果；StartLux-Decision 和 qwen3-embedding 同级。
+- **任务**是模型的 `tasks`：`systemone`、`embeddings`、`rerank`、`tts`、`sing`。网关只按任务选条目。
+- StartLux 需要 `startlux-decide` 把 typed systemone 请求翻译成 llama-server 的 prompt/readout；这个伴生进程由同一个 `llamacpp` 条目托管，不是另一个服务。
+
 ### 服务条目
 
 用户只填 `name` 与 `endpoint`；`id`、协议、主机端口、健康路径都由服务端推导。
@@ -126,7 +124,8 @@ corepack pnpm add "D:/path/to/cortico-world-service" --ignore-workspace
 | `secretName` | 上游 Bearer token 的 `.env` 变量名 |
 | `modelProfile` | `auto` 或模型 profile id |
 | `models` | 空 = 从 `/v1/models` 现取 |
-| `options` | 该服务的默认 options；audiocpp 预设读取 `backend`、`device`、`threads`、`idleUnloadMs`、`ui`、`pollMs`、`startTimeoutSec`；托管 systemone 读取 `modelDir`、`llamacppUrl`、`thinkMode`、`gate` |
+| `tasks` | 该模型承载的任务：`embeddings` / `rerank` / `systemone` / `tts` / `sing`；空 = 按类型默认 |
+| `options` | 该服务的默认 options；audiocpp 预设读取 `backend`、`device`、`threads`、`idleUnloadMs`、`ui`、`pollMs`、`startTimeoutSec`；StartLux 读取 `modelDir`、`startluxDir`、`startluxBinary`、`systemonePort`、`systemoneUrl`、`systemoneSecretName`、`startluxArgs`、`bidirMode`、`thinkMode`、`gate`、`instant` |
 
 ### 类型推导
 
@@ -140,6 +139,8 @@ corepack pnpm add "D:/path/to/cortico-world-service" --ignore-workspace
 | `llamacpp` | `llamacpp` | 回环 8081，否则按协议 |
 | `custom` | `custom` | 按协议 |
 
+`tasks` 空时的默认值：`llamacpp` → `embeddings` + `rerank`；`systemone` → `systemone`；`audiocpp` / `openai` / `custom` → `tts`；`sing` / `svc` → `sing`。
+
 - 端点缺主机时按 `127.0.0.1`；缺端口时按上表补。`8090` / `8081` 只用于回环地址；`https://api.example.com` 这类外部端点仍用 443，`http://` 用 80。
 - 健康路径固定 `/health`；`openai` / `custom` / `systemone` 的 `/health` 回 404 时改探 `/v1/models`。
 - audiocpp 的配置文件固定读 `<serverDir>/server.json`。
@@ -151,20 +152,25 @@ corepack pnpm add "D:/path/to/cortico-world-service" --ignore-workspace
 ### 启动预设
 
 - `audiocpp`：默认 `audiocpp_server(.exe)`，参数 `--config --host --port --backend --device --threads --idle-unload-ms --no-ui` 加 `args`；`--host` / `--port` 来自 `endpoint`。
-- `llamacpp`：默认 `llama-server(.exe)`，只用条目自己的 `args`。网关代理 `/v1/embeddings` 与 `/v1/rerank`；LLM chat 仍用框架内建的 llamacpp provider。
-- `systemone`：外部端点 `manage: false` 时只探活与转发，不需要 `options.modelDir`。托管时默认 `startlux-decide(.exe)`，参数固定为 `serve --model <options.modelDir> --backend llamacpp --llamacpp-url <options.llamacppUrl 或 http://127.0.0.1:8081> --host <endpoint host> --port <endpoint port>`；`options.thinkMode` 为 `auto` / `never` / `always` 时追加 `--think-mode`，`options.gate` 是有限数字时追加 `--gate`，最后追加条目 `args`。`options.modelDir` 必填，`serverDir` 指向可执行文件目录。
+- `llamacpp`：默认 `llama-server(.exe)`。普通模型（`tasks` 空）只用条目自己的 `args`，网关代理 `/v1/embeddings` 与 `/v1/rerank`。StartLux（`tasks: ['systemone']`）会再拉起伴生 `startlux-decide`：
+  - 主进程参数在条目 `args` 后面补齐 `--host`、`--port`，并强制 `--parallel 1 --ctx-checkpoints 0`、默认 `-b 16384 -ub 16384 -c 20480`；
+  - 伴生进程默认 `startlux-decide(.exe)`，参数 `serve --model <options.modelDir> --backend llamacpp --llamacpp-url <endpoint> --host <systemone host> --port <systemonePort>`，可选 `--think-mode`、`--gate` 与 `options.startluxArgs`；
+  - 伴生进程环境自动设 `STARTLUX_LLAMACPP_BIDIR=server`，可用 `options.bidirMode` 覆盖；
+  - `options.modelDir` 与 `options.startluxDir` 必填；`options.instant: true` 会忽略 `--think-mode auto/always`。
+- `systemone`：外部 Jev 兼容端点，`manage: false` 时只探活与转发；本地 StartLux 不要用这个类型。
 - `svc` / `custom` / `openai` / `sing`：操作者给 `binary` 与 `args`。
 
-StartLux 需要两条条目：先由 `llamacpp` 条目加载 StartLux 的 GGUF 并监听 8081，再由 `systemone` 条目用 `startlux-decide` 连接它并监听 8090。示例见上面的配置。
+StartLux 0.8B Instant 本地部署要点：
 
-StartLux 本地部署要点：
-
-- 先用上游 `startlux-decide convert gguf --model <原始模型> --out <目录>` 生成 GGUF；`options.modelDir` 指向保留 tokenizer/config 的目录，`llamacpp` 条目的 `args` 用 `-m` 指向同一目录里的 `.gguf`。
-- `llama-server` 建议按上游文档加 `--parallel 1 --ctx-checkpoints 0 -b 16384 -ub 16384`；Q8_0 是常用量化。Instant 模型需要非因果注意力的 llama.cpp 补丁，且不接受 `--think-mode`。
-- `serverDir` 指向包含 `startlux-decide`（Windows 为 `.exe`）的目录；大模型加载慢时调大 `options.startTimeoutSec`（默认 60 秒）。
+- 模型卡给的是 Q8_0 0.81 GB / Q4_K_M 0.53 GB，上下文 262,144；权重许可是 CC BY-NC 4.0，商用需单独授权。
+- `options.modelDir` 指向 BF16 仓库目录（tokenizer、`config.json`、`decision_config.json`），`args` 里的 `-m` 指向 GGUF 文件；两者不是同一个目录时分别填。
+- 服务会自动加 Instant 必需的 `--parallel 1 --ctx-checkpoints 0 -b 16384 -ub 16384` 与 `STARTLUX_LLAMACPP_BIDIR=server`；如果 prompt 更长，调大条目 `args` 里的 `-c` / `-b` / `-ub`。
+- `options.startluxDir` 指向包含 `startlux-decide`（Windows 为 `.exe`）的目录；大模型加载慢时调大 `options.startTimeoutSec`（默认 60 秒）。
 - 服务不会下载模型或转换权重，只负责拉起进程、探活和转发。
 
-启动前先探活：已经活着就接管，不重复拉起。停止时结束子进程。服务输出写到 `dataDir/service-<id>.log`。
+从 0.6.0 迁移：把本地 `type: systemone` 条目改成 `type: llamacpp`，加 `tasks: ['systemone']`，把原 `options.modelDir`、`thinkMode`、`gate` 保留，再补 `startluxDir`；llama-server 的 GGUF 参数写在条目 `args`，不再需要单独的 llamacpp 条目。外部 Jev 端点继续用 `type: systemone`。
+
+启动前先探活：已经活着就接管，不重复拉起。停止时先停伴生、再停主进程；服务输出写到 `dataDir/service-<id>.log`。修改运行中条目的 endpoint、args 或 StartLux options 后，点一次「重启」让新参数生效。
 
 ## HTTP 网关
 
@@ -177,9 +183,9 @@ StartLux 本地部署要点：
 | `GET /v1/audio/voices?model=&service=` | 返回 `{object, model, voices[], data[]}` |
 | `POST /v1/audio/speech` | `{model?, input, voice?, response_format?, speed?, instructions?, emotion?, language?, options?}` |
 | `POST /v1/audio/sing` | `{model?, lyrics}`；路由到 `type: 'sing'` / `'svc'` 的条目 |
-| `POST /v1/systemone` | JSON 对象原样转发到 `type: 'systemone'` 的条目；`model` 用于选条目，不做 token 截断 |
-| `POST /v1/embeddings` | `{model?, input, dimensions?}` 原样转发到 `type: 'llamacpp'` 的条目 |
-| `POST /v1/rerank` | `{model?, query, documents, top_n?}` 原样转发到 `type: 'llamacpp'` 的条目；上游 404/405/501 回 501 `unsupported` |
+| `POST /v1/systemone` | JSON 对象原样转发到 `tasks` 含 `systemone` 的条目；llama.cpp 的 StartLux 走伴生 `startlux-decide`，`type: 'systemone'` 走自己的 endpoint；`model` 用于选条目，不做 token 截断 |
+| `POST /v1/embeddings` | `{model?, input, dimensions?}` 原样转发到 `tasks` 含 `embeddings` 的条目 |
+| `POST /v1/rerank` | `{model?, query, documents, top_n?}` 原样转发到 `tasks` 含 `rerank` 的条目；上游 404/405/501 回 501 `unsupported` |
 
 - 令牌：配置只存 `tokenSecret` 名字，值从部署 `.env` 读。非回环地址没有令牌、或变量名为空值，网关拒绝启动。`allowQueryToken: true` 时才接受 `?token=`。
 - 限额：请求体 1 MiB，`input` 8000 字，`instructions` 2000 字，`options` 16 KiB。
@@ -221,8 +227,8 @@ World 页用 Cortico 自己的页面页签分成两块面板，不再声明配�
 - 右侧是选中服务的状态块（状态、说明、地址、模型数、PID、重启次数、令牌）与动作行（启动 / 停止 / 重启 / 探活 / 日志 / 上移 / 下移）。
 - 编辑器不用抽屉：基本信息常显（名称与类型）；下面按编号折叠区分「服务地址 / 运行时 / 模型 / 高级」。
   - 服务地址：端点与上游令牌变量名；已保存的条目有「测试连接」，草稿不显示。
-  - 运行时：启用、托管进程、随 World 启动、退出后重启；托管时显示目录、可执行文件与参数。`audiocpp` / `llamacpp` 另有后端、设备与线程，`audiocpp` 还有空闲卸载与 WebUI 开关；`systemone` 托管时显示 StartLux 本地预设（模型目录、llama.cpp 地址、思考模式、思考阈值）。这些写回 `entry.options` 的同名键并保留其他键；模型目录必填，思考阈值限 0–1。
-  - 模型：模型 profile 与逗号分隔的模型表；`llamacpp` 只显示模型表。
+  - 运行时：启用、托管进程、随 World 启动、退出后重启；托管时显示目录、可执行文件与参数。`audiocpp` 另有后端、设备与线程、空闲卸载与 WebUI 开关；普通 `llamacpp` 另有后端、设备与线程。`llamacpp` 的任务选 `SystemOne（StartLux）` 时显示 StartLux 预设（模型目录、StartLux 目录/可执行文件、SystemOne 端口、思考模式/阈值、Instant）。这些写回 `entry.options` 的同名键并保留其他键；模型目录与 StartLux 目录必填，端口限 1–65535，思考阈值限 0–1。
+  - 模型：模型任务（Embeddings + Rerank / SystemOne）、模型 profile 与逗号分隔的模型表；`llamacpp` 只显示任务与模型表。
   - 高级：其余 Options JSON，默认折叠。
 - 新增服务先作为草稿卡片出现，默认名称 `未命名服务`、类型 `audiocpp`、地址 `http://127.0.0.1:8080`、不启用、托管进程、不随 World 启动、退出不重启。名称、类型与模型药丸随输入即时更新；删除草稿不需要确认，保存时才调用 `add` 并选中新条目。
 - 切换类型只在地址为空或等于旧类型默认地址时替换默认端点；`openai` 默认关闭进程托管，`sing` / `svc` 默认 `http://127.0.0.1:9882`。
@@ -252,7 +258,8 @@ pnpm smoke:host "D:/AI/audio-v0.9.3-bin-windows-x64-cuda13.3" 8018
 ## 版本规则
 
 - 每次发版至少升 patch（第三位）；较大改动升 minor（第二位）。不单独发明 major，除非契约破坏到需要另起包。
-- 0.6.0 按此规则升 minor：systemone 增加 StartLux 本地启动预设，llamacpp 与 systemone 获得默认端口。
+- 0.7.0 按此规则升 minor：StartLux 改为 `llamacpp` 条目下的模型（`tasks: ['systemone']`），同一条目托管 llama-server 与伴生 startlux-decide；网关按模型任务路由，外部 systemone 类型保留。
+- 0.6.0 按此规则升 minor：systemone 增加 StartLux 本地启动预设，llamacpp 与 systemone 获得默认端口。（0.7.0 起本地 StartLux 改用 llamacpp 条目，0.6.0 的写法不再推荐。）
 - 0.5.0 按此规则升 minor：新增 `/v1/systemone`、`/v1/embeddings`、`/v1/rerank` 三条网关路由与对应协议适配器。
 - 0.4.3 按此规则升 patch：服务页左栏吸顶，右侧配置滚动时列表不跟着走。
 - 0.4.2 按此规则升 patch：IndexTTS2 的 `use_emotion_text` / `emotion_text` 改由语音语义管理，修复旧 options 覆盖。

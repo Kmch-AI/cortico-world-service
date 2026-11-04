@@ -85,6 +85,69 @@ export function hostPort(entry: EndpointLike): { host: string; port: number } {
   return { host: host || DEFAULT_HOST, port };
 }
 
+/**
+ * 条目承载的模型任务；显式 `tasks` 优先，否则按服务类型给默认值。
+ * `systemone` 与 `embeddings` / `rerank` 是同一级任务。
+ */
+export function tasksOfEntry(entry: Pick<ServiceEntry, 'type' | 'tasks'>): string[] {
+  if (entry.tasks?.length) return entry.tasks;
+  switch (entry.type) {
+    case 'sing':
+    case 'svc':
+      return ['sing'];
+    case 'llamacpp': return ['embeddings', 'rerank'];
+    case 'systemone': return ['systemone'];
+    case 'audiocpp':
+    case 'openai':
+    case 'custom':
+      return ['tts'];
+    default:
+      return [];
+  }
+}
+
+/** llama.cpp 条目是否承载 StartLux 的 `systemone` 任务。 */
+export function isStartLuxEntry(entry: Pick<ServiceEntry, 'type' | 'tasks'>): boolean {
+  return entry.type === 'llamacpp' && tasksOfEntry(entry).includes('systemone');
+}
+
+/**
+ * `systemone` 任务的上游地址。外部 systemone 条目用自己的 endpoint；
+ * llama.cpp 托管的 StartLux 用伴生 startlux-decide，默认与本机 endpoint 同主机、8090 端口。
+ */
+export function systemoneEndpointOf(
+  entry: Pick<ServiceEntry, 'type' | 'endpoint' | 'options'>,
+): string {
+  if (entry.type === 'systemone') return endpointUrl(entry);
+  const configured = entry.options?.systemoneUrl;
+  if (typeof configured === 'string' && configured.trim()) {
+    return endpointUrl({ type: 'systemone', endpoint: configured.trim() });
+  }
+  const primary = hostPort(entry);
+  const rawPort = entry.options?.systemonePort;
+  const port = typeof rawPort === 'number' && Number.isInteger(rawPort)
+    && rawPort >= 1 && rawPort <= 65535 ? rawPort : 8090;
+  const host = primary.host === '0.0.0.0' || primary.host === '::' ? '127.0.0.1' : primary.host;
+  const address = host.includes(':') ? `[${host}]` : host;
+  return `http://${address}:${port}`;
+}
+
+/** 伴生 startlux-decide 的 host/port，用于启动参数。 */
+export function systemoneHostPort(
+  entry: Pick<ServiceEntry, 'type' | 'endpoint' | 'options'>,
+): { host: string; port: number } {
+  const url = new URL(systemoneEndpointOf(entry));
+  return {
+    host: url.hostname.replace(/^\[|\]$/g, ''),
+    port: url.port ? Number(url.port) : 8090,
+  };
+}
+
+/** llama-server 的 origin；`--llamacpp-url` 和健康探针只要 scheme/host/port。 */
+export function primaryOrigin(entry: EndpointLike): string {
+  return new URL(endpointUrl(entry)).origin;
+}
+
 /** 只有托管进程、没有 HTTP 协议的条目返回 null。 */
 export function healthPathOf(entryOrType: TypeArg): string | null {
   return protocolOf(entryOrType) === 'none' ? null : '/health';

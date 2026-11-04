@@ -115,6 +115,16 @@ function systemoneEntry(url: string): ServiceEntry {
   };
 }
 
+function startluxEntry(url: string): ServiceEntry {
+  return {
+    ...llamacppEntry(url),
+    id: 'startlux',
+    name: 'StartLux',
+    tasks: ['systemone'],
+    options: { systemoneUrl: url },
+  };
+}
+
 function llamacppEntry(url: string): ServiceEntry {
   return {
     id: 'llama',
@@ -451,6 +461,38 @@ describe('service World JSON routes', () => {
         code: 'not_ready',
       });
     }
+    await world.stop();
+  });
+
+  it('llamacpp 条目带 systemone 任务时把 /v1/systemone 路由到 StartLux 伴生端点', async () => {
+    const upstream = await ttsUpstream();
+    const world = build([startluxEntry(upstream.url)]);
+    await world.start(new FakeHost());
+    const base = `http://127.0.0.1:${world.gatewayStatus().port}`;
+    const body = { state: 'x', questions: {} };
+    const res = await fetch(`${base}/v1/systemone`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ echo: body });
+    expect(upstream.requests.some((item) => item.url === '/v1/systemone')).toBe(true);
+    const health = await fetch(`${base}/health`).then((item) => item.json()) as {
+      services: Array<{ tasks: string[]; entry: { type: string; tasks: string[] } }>;
+    };
+    expect(health.services[0]).toMatchObject({
+      tasks: ['systemone'],
+      entry: { type: 'llamacpp', tasks: ['systemone'] },
+    });
+
+    // StartLux 只声明 systemone 任务，不应被 embeddings 选中。
+    const embed = await fetch(`${base}/v1/embeddings`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ input: 'x' }),
+    });
+    expect(embed.status).toBe(503);
     await world.stop();
   });
 

@@ -1,3 +1,13 @@
+## 0.7.0
+
+- 模型/任务层级修正：一个条目就是一个模型部署，`tasks` 决定路由；`systemone` 与 `embeddings` / `rerank` 同级。StartLux 不再是独立 systemone 服务，而是 `llamacpp` 条目下的模型（`tasks: ['systemone']`）。
+- llama.cpp 的 StartLux 条目同时托管 `llama-server`（条目端点）与伴生 `startlux-decide`（`options.systemonePort`，默认 8090）；两端都健康才算 online，任一端退出整组重启，停止结束两个进程。
+- StartLux 主进程自动补 `--host` / `--port`，强制 `--parallel 1 --ctx-checkpoints 0`，默认 `-b 16384 -ub 16384 -c 20480`；伴生进程自动设 `STARTLUX_LLAMACPP_BIDIR=server`，支持 `modelDir`、`startluxDir`、`startluxBinary`、`startluxArgs`、`thinkMode`、`gate`、`instant`。
+- `/v1/systemone` 按 `systemone` 任务选择条目：llama.cpp StartLux 走伴生端点，外部 `type: systemone` 走自己的 endpoint；`/v1/embeddings` 与 `/v1/rerank` 只选任务匹配的条目。
+- 服务面板新增「模型任务」；选择 SystemOne（StartLux）时显示模型目录、StartLux 目录/可执行文件、SystemOne 端口、思考模式/阈值与 Instant。外部 systemone 端点保留为独立类型。
+- 移除 0.6.0 的「systemone 托管 StartLux」预设；0.6.0 的本地配置需迁移到 llamacpp + tasks。
+- 服务包 11 个文件 177 个测试全绿；typecheck、build:webui、smoke:webui 通过。
+
 ## 0.6.0
 
 - 新增 systemone 的 StartLux 本地启动预设：默认 `startlux-decide`，参数 `serve --model <options.modelDir> --backend llamacpp --llamacpp-url <options.llamacppUrl 或 http://127.0.0.1:8081> --host <endpoint host> --port <endpoint port>`；`options.thinkMode` 为 `auto` / `never` / `always` 时追加 `--think-mode`，`options.gate` 是有限数字时追加 `--gate`，最后追加条目 `args`。

@@ -1,8 +1,10 @@
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { Supervisor } from '../src/supervisor.ts';
+import { endpointUrl, systemoneEndpointOf } from '../src/entry.ts';
+import { Supervisor, type LaunchSpec, type SupervisorDeps } from '../src/supervisor.ts';
+import type { ServiceStatus } from '../src/types.ts';
 import { quietLogger } from './helpers/quiet.ts';
-import { harness } from './helpers/service.ts';
+import { fakeChild, harness, serviceEntry, type FakeChild } from './helpers/service.ts';
 
 function make(
   patch: Parameters<typeof harness>[0] = {},
@@ -11,6 +13,84 @@ function make(
   const h = harness(patch, opts);
   const sup = new Supervisor({ entry: h.entry, dataDir: 'C:/data', log: quietLogger, deps: h.deps });
   return { sup, h };
+}
+
+function healthOk(): Response {
+  return new Response(JSON.stringify({ status: 'ok', models: 1, backend: 'cuda' }), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+/** 两个进程的假探活与假拉起；按 URL 区分 llama-server 与 startlux-decide。 */
+function startluxHarness(opts: {
+  primary?: boolean;
+  companion?: boolean;
+  launchHealthy?: boolean;
+} = {}) {
+  const entry = serviceEntry({
+    id: 'startlux',
+    name: 'StartLux 0.8B',
+    type: 'llamacpp',
+    endpoint: 'http://127.0.0.1:8081',
+    serverDir: 'C:/llama',
+    tasks: ['systemone'],
+    args: '-m D:/models/startlux.gguf -ngl 99 --parallel 2 --ctx-checkpoints 1',
+    options: {
+      modelDir: 'D:/models/StartLux-0.8B',
+      startluxDir: 'C:/startlux',
+      startluxBinary: 'startlux-decide.exe',
+      systemonePort: 8090,
+      thinkMode: 'auto',
+      gate: 0.6,
+    },
+  });
+  let primaryHealthy = opts.primary ?? false;
+  let companionHealthy = opts.companion ?? false;
+  const launches: LaunchSpec[] = [];
+  const phases: ServiceStatus[] = [];
+  const children = new Map<'primary' | 'companion', FakeChild>();
+  let clock = 0;
+  const deps: SupervisorDeps = {
+    fetch: (async (input: Parameters<typeof fetch>[0]) => {
+      const url = String(input);
+      if (url.startsWith(endpointUrl(entry))) {
+        return primaryHealthy ? healthOk() : new Response('no', { status: 503 });
+      }
+      if (url.startsWith(systemoneEndpointOf(entry))) {
+        return companionHealthy ? healthOk() : new Response('no', { status: 503 });
+      }
+      return new Response('no', { status: 503 });
+    }) as typeof fetch,
+    launch: (spec) => {
+      launches.push(spec);
+      const role = spec.command.includes('startlux') ? 'companion' : 'primary';
+      const child = fakeChild(role === 'companion' ? 5252 : 4242);
+      children.set(role, child);
+      if (opts.launchHealthy !== false) {
+        if (role === 'primary') primaryHealthy = true;
+        else companionHealthy = true;
+      }
+      return child;
+    },
+    exists: () => true,
+    mkdir: () => {},
+    openLog: () => ({ write: () => {}, close: () => {} }),
+    now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+    onPhase: (status) => { phases.push(status); },
+  };
+  return {
+    entry, deps, launches, phases, children,
+    get primaryHealthy() { return primaryHealthy; },
+    set primaryHealthy(value: boolean) { primaryHealthy = value; },
+    get companionHealthy() { return companionHealthy; },
+    set companionHealthy(value: boolean) { companionHealthy = value; },
+  };
+}
+
+function startluxSupervisor(h: ReturnType<typeof startluxHarness>): Supervisor {
+  return new Supervisor({ entry: h.entry, dataDir: 'C:/data', log: quietLogger, deps: h.deps });
 }
 
 describe('Supervisor', () => {
@@ -59,86 +139,144 @@ describe('Supervisor', () => {
     expect(sup.status().detail).toContain('serverDir');
   });
 
-  it('按 StartLux 预设拉起 systemone,参数完整', async () => {
-    const { sup, h } = make({
-      id: 'startlux',
-      name: 'StartLux',
-      type: 'systemone',
-      endpoint: 'http://127.0.0.1:8090',
-      manage: true,
-      serverDir: 'C:/startlux',
-      options: {
-        modelDir: 'D:/models/StartLux-Decision',
-        llamacppUrl: 'http://127.0.0.1:18081',
-        thinkMode: 'always',
-        gate: 0.72,
-      },
-      args: '--extra 1',
-    }, { healthFails: 1 });
+  it('llamacpp 的 StartLux 模型拉起 llama-server 与 startlux-decide', async () => {
+    const h = startluxHarness();
+    const sup = startluxSupervisor(h);
     await sup.start();
-    expect(h.launches).toHaveLength(1);
-    const launch = h.launches[0]!;
-    const exe = process.platform === 'win32' ? 'startlux-decide.exe' : 'startlux-decide';
-    expect(launch.command).toBe(join('C:/startlux', exe));
-    expect(launch.cwd).toBe('C:/startlux');
-    expect(launch.args).toEqual([
-      'serve',
-      '--model', 'D:/models/StartLux-Decision',
-      '--backend', 'llamacpp',
-      '--llamacpp-url', 'http://127.0.0.1:18081',
+    expect(h.launches).toHaveLength(2);
+    const [primary, companion] = h.launches;
+    const llamaExe = process.platform === 'win32' ? 'llama-server.exe' : 'llama-server';
+    const startluxExe = process.platform === 'win32' ? 'startlux-decide.exe' : 'startlux-decide';
+    expect(primary!.command).toBe(join('C:/llama', llamaExe));
+    expect(primary!.args).toEqual([
+      '-m', 'D:/models/startlux.gguf',
+      '-ngl', '99',
       '--host', '127.0.0.1',
-      '--port', '8090',
-      '--think-mode', 'always',
-      '--gate', '0.72',
-      '--extra', '1',
+      '--port', '8081',
+      '--parallel', '1',
+      '--ctx-checkpoints', '0',
+      '-b', '16384',
+      '-ub', '16384',
+      '-c', '20480',
     ]);
-    expect(sup.status().phase).toBe('online');
-    await sup.stop();
-  });
-
-  it('systemone 预设缺省的可选参数不追加', async () => {
-    const { sup, h } = make({
-      id: 'startlux',
-      name: 'StartLux',
-      type: 'systemone',
-      endpoint: 'http://127.0.0.1:8090',
-      manage: true,
-      serverDir: 'C:/startlux',
-      options: { modelDir: 'D:/models/StartLux-Decision', thinkMode: 'plain', gate: '0.5' },
-    }, { healthFails: 1 });
-    await sup.start();
-    expect(h.launches).toHaveLength(1);
-    expect(h.launches[0]!.args).toEqual([
+    expect(companion!.command).toBe(join('C:/startlux', startluxExe));
+    expect(companion!.cwd).toBe('C:/startlux');
+    expect(companion!.args).toEqual([
       'serve',
-      '--model', 'D:/models/StartLux-Decision',
+      '--model', 'D:/models/StartLux-0.8B',
       '--backend', 'llamacpp',
       '--llamacpp-url', 'http://127.0.0.1:8081',
       '--host', '127.0.0.1',
       '--port', '8090',
+      '--think-mode', 'auto',
+      '--gate', '0.6',
     ]);
+    expect(companion!.env).toEqual({ STARTLUX_LLAMACPP_BIDIR: 'server' });
+    expect(sup.status()).toMatchObject({
+      phase: 'online', pid: 4242, companionPid: 5252, tasks: ['systemone'],
+    });
     await sup.stop();
   });
 
-  it('systemone 托管缺 options.modelDir 时保持 off,不拉起进程', async () => {
-    const { sup, h } = make({
-      id: 'startlux',
-      name: 'StartLux',
-      type: 'systemone',
-      endpoint: 'http://127.0.0.1:8090',
-      manage: true,
-      serverDir: 'C:/startlux',
-      options: {},
-    }, { healthFails: 1 });
+  it('两端都已在线时接管,不重复拉起', async () => {
+    const h = startluxHarness({ primary: true, companion: true });
+    const sup = startluxSupervisor(h);
+    await sup.start();
+    expect(h.launches).toEqual([]);
+    expect(sup.status()).toMatchObject({ phase: 'online', external: true, pid: null, companionPid: null });
+    await sup.stop();
+  });
+
+  it('只缺 startlux-decide 时只拉起伴生进程', async () => {
+    const h = startluxHarness({ primary: true });
+    const sup = startluxSupervisor(h);
+    await sup.start();
+    expect(h.launches).toHaveLength(1);
+    expect(h.launches[0]!.command).toContain('startlux-decide');
+    expect(sup.status()).toMatchObject({ phase: 'online', pid: 5252, companionPid: 5252 });
+    await sup.stop();
+  });
+
+  it('只缺 llama-server 时只拉起主进程', async () => {
+    const h = startluxHarness({ companion: true });
+    const sup = startluxSupervisor(h);
+    await sup.start();
+    expect(h.launches).toHaveLength(1);
+    expect(h.launches[0]!.command).toContain('llama-server');
+    expect(sup.status()).toMatchObject({ phase: 'online', pid: 4242, companionPid: null });
+    await sup.stop();
+  });
+
+  it('StartLux 缺 options.modelDir 时保持 off,不拉起进程', async () => {
+    const h = startluxHarness();
+    h.entry.options = { ...h.entry.options, modelDir: '' };
+    const sup = startluxSupervisor(h);
     await sup.start();
     expect(h.launches).toEqual([]);
     expect(sup.status().phase).toBe('off');
-    expect(sup.status().detail).toBe('options.modelDir is required for type systemone');
+    expect(sup.status().detail).toContain('options.modelDir');
+  });
+
+  it('StartLux 缺 options.startluxDir 时保持 off,不拉起进程', async () => {
+    const h = startluxHarness();
+    h.entry.options = { ...h.entry.options, startluxDir: '' };
+    const sup = startluxSupervisor(h);
+    await sup.start();
+    expect(h.launches).toEqual([]);
+    expect(sup.status().phase).toBe('off');
+    expect(sup.status().detail).toContain('options.startluxDir');
+  });
+
+  it('Instant 模型忽略自动思考', async () => {
+    const h = startluxHarness();
+    h.entry.options = { ...h.entry.options, instant: true, thinkMode: 'always' };
+    const sup = startluxSupervisor(h);
+    await sup.start();
+    const companion = h.launches.find((item) => item.command.includes('startlux'))!;
+    expect(companion.args).not.toContain('--think-mode');
+    await sup.stop();
+  });
+
+  it('伴生进程退出时保留 llama-server,只安排伴生重启', async () => {
+    const h = startluxHarness();
+    const sup = startluxSupervisor(h);
+    await sup.start();
+    h.children.get('companion')!.emitExit(1);
+    await Promise.resolve();
+    expect(sup.status().phase).toBe('error');
+    expect(sup.status().detail).toContain('companion');
+    expect(h.children.get('primary')!.killed).toBe(false);
+    expect((sup as unknown as { restartTimer: NodeJS.Timeout | null }).restartTimer).not.toBeNull();
+    await sup.stop();
+  });
+
+  it('llama-server 退出时收掉伴生并安排整组重启', async () => {
+    const h = startluxHarness();
+    const sup = startluxSupervisor(h);
+    await sup.start();
+    h.children.get('primary')!.emitExit(1);
+    await Promise.resolve();
+    expect(sup.status().phase).toBe('error');
+    expect(sup.status().detail).toContain('primary');
+    expect(h.children.get('companion')!.killed).toBe(true);
+    expect((sup as unknown as { restartTimer: NodeJS.Timeout | null }).restartTimer).not.toBeNull();
+    await sup.stop();
+  });
+
+  it('停止结束两个进程', async () => {
+    const h = startluxHarness();
+    const sup = startluxSupervisor(h);
+    await sup.start();
+    await sup.stop();
+    expect(h.children.get('primary')!.killed).toBe(true);
+    expect(h.children.get('companion')!.killed).toBe(true);
+    expect(sup.status().phase).toBe('off');
   });
 
   it('外部 systemone 仍只探活,不要求 modelDir', async () => {
     const { sup, h } = make({
-      id: 'startlux',
-      name: 'StartLux',
+      id: 'external-systemone',
+      name: 'External SystemOne',
       type: 'systemone',
       endpoint: 'http://127.0.0.1:8090',
       manage: false,
@@ -149,32 +287,6 @@ describe('Supervisor', () => {
     expect(h.launches).toEqual([]);
     expect(sup.status().phase).toBe('online');
     expect(sup.status().external).toBe(true);
-    await sup.stop();
-  });
-
-  it('托管 systemone 健康接口不给 backend 时,状态用 llamacpp', async () => {
-    const h = harness({
-      id: 'startlux',
-      name: 'StartLux',
-      type: 'systemone',
-      endpoint: 'http://127.0.0.1:8090',
-      manage: true,
-      serverDir: 'C:/startlux',
-      options: { modelDir: 'D:/models/StartLux-Decision' },
-    });
-    let calls = 0;
-    h.deps.fetch = (async () => {
-      calls += 1;
-      if (calls === 1) return new Response('no', { status: 503 });
-      return new Response(JSON.stringify({ status: 'ok', models: 2 }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    }) as typeof fetch;
-    const sup = new Supervisor({ entry: h.entry, dataDir: 'C:/data', log: quietLogger, deps: h.deps });
-    await sup.start();
-    expect(sup.status().phase).toBe('online');
-    expect(sup.status().backend).toBe('llamacpp');
     await sup.stop();
   });
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  endpointUrl, healthPathOf, healthUrl, hostPort, protocolOf, serverJsonPath, serviceIdFor, slugify,
+  endpointUrl, healthPathOf, healthUrl, hostPort, isStartLuxEntry, primaryOrigin, protocolOf,
+  serverJsonPath, serviceIdFor, slugify, systemoneEndpointOf, systemoneHostPort, tasksOfEntry,
 } from '../src/entry.ts';
 import { normalizeEntry, validateServices } from '../src/validate.ts';
 import type { ServiceEntry, ServiceType } from '../src/types.ts';
@@ -31,6 +32,40 @@ describe('type → protocol', () => {
   ] as Array<[ServiceType, string]>)('protocolOf(%s) = %s', (type, protocol) => {
     expect(protocolOf(type)).toBe(protocol);
     expect(protocolOf({ type })).toBe(protocol);
+  });
+});
+
+describe('model tasks', () => {
+  it('按类型给默认任务，显式 tasks 优先', () => {
+    expect(tasksOfEntry(entry({ type: 'llamacpp' }))).toEqual(['embeddings', 'rerank']);
+    expect(tasksOfEntry(entry({ type: 'systemone' }))).toEqual(['systemone']);
+    expect(tasksOfEntry(entry({ type: 'audiocpp' }))).toEqual(['tts']);
+    expect(tasksOfEntry(entry({ type: 'llamacpp', tasks: ['systemone'] }))).toEqual(['systemone']);
+    expect(tasksOfEntry(entry({ type: 'llamacpp', tasks: ['embeddings'] }))).toEqual(['embeddings']);
+  });
+
+  it('llamacpp + systemone 是 StartLux 模型', () => {
+    expect(isStartLuxEntry(entry({ type: 'llamacpp', tasks: ['systemone'] }))).toBe(true);
+    expect(isStartLuxEntry(entry({ type: 'llamacpp' }))).toBe(false);
+    expect(isStartLuxEntry(entry({ type: 'systemone' }))).toBe(false);
+  });
+
+  it('systemone 上游：外部用 endpoint，本地用伴生端口', () => {
+    expect(systemoneEndpointOf(entry({ type: 'systemone', endpoint: 'https://sys.example.com' })))
+      .toBe('https://sys.example.com');
+    expect(systemoneEndpointOf(entry({ type: 'llamacpp', endpoint: 'http://127.0.0.1:8081' })))
+      .toBe('http://127.0.0.1:8090');
+    expect(systemoneEndpointOf(entry({
+      type: 'llamacpp', endpoint: 'http://127.0.0.1:8081', options: { systemonePort: 9090 },
+    }))).toBe('http://127.0.0.1:9090');
+    expect(systemoneEndpointOf(entry({
+      type: 'llamacpp', endpoint: 'http://127.0.0.1:8081', options: { systemoneUrl: 'http://127.0.0.1:9999' },
+    }))).toBe('http://127.0.0.1:9999');
+    expect(systemoneHostPort(entry({
+      type: 'llamacpp', endpoint: '0.0.0.0:8081', options: { systemonePort: 9090 },
+    }))).toEqual({ host: '127.0.0.1', port: 9090 });
+    expect(primaryOrigin(entry({ type: 'llamacpp', endpoint: 'http://127.0.0.1:8081/v1' })))
+      .toBe('http://127.0.0.1:8081');
   });
 });
 
@@ -134,6 +169,19 @@ describe('normalizeEntry', () => {
     expect(created.manage).toBe(true);
   });
 
+  it('systemone 默认不托管；tasks 校验并去重', () => {
+    const external = normalizeEntry({ name: 'Ext', type: 'systemone', endpoint: 'https://jev.example.com' });
+    expect(external.manage).toBe(false);
+    const tasks = normalizeEntry({
+      name: 'x', type: 'llamacpp', endpoint: 'http://host',
+      tasks: ['systemone', 'systemone', 'embeddings'],
+    });
+    expect(tasks.tasks).toEqual(['systemone', 'embeddings']);
+    expect(() => normalizeEntry({
+      name: 'x', type: 'llamacpp', endpoint: 'http://host', tasks: ['chat'],
+    })).toThrow(/unknown model task/);
+  });
+
   it('更新时保留 id,拒绝改 id', () => {
     const base = entry();
     const updated = normalizeEntry({ name: 'New name' }, base);
@@ -160,6 +208,7 @@ describe('normalizeEntry', () => {
       secretName: 'TOKEN',
       modelProfile: 'openai',
       models: ['a', 'b'],
+      tasks: ['systemone'],
       options: { backend: 'cpu' },
       unknownKey: 'ignored',
       anotherUnknown: 1,
@@ -179,6 +228,7 @@ describe('normalizeEntry', () => {
       secretName: 'TOKEN',
       modelProfile: 'openai',
       models: ['a', 'b'],
+      tasks: ['systemone'],
       options: { backend: 'cpu' },
     });
   });

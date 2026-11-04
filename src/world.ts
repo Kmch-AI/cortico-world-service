@@ -6,7 +6,7 @@ import type { Language } from 'cortico/core/language.ts';
 import type { Logger, ToolDef, World, WorldHost, WorldLamp, WorldWebUiDecl } from 'cortico/core/types.ts';
 import { nullLogger, nowIso } from 'cortico/core/util.ts';
 import { SERVICE_ID, SERVICE_VERSION, serviceText } from './config.ts';
-import { serviceIdFor } from './entry.ts';
+import { serviceIdFor, systemoneEndpointOf, tasksOfEntry } from './entry.ts';
 import { ServiceError, errorMessage } from './errors.ts';
 import {
   gatewayAuthError, isLoopbackHost, startGateway, type GatewayHandle, type GatewayHandlers,
@@ -738,7 +738,7 @@ export class ServiceWorld implements World {
     return {
       id,
       voices: [],
-      tasks: protocolOf(entry) === 'sing' ? ['sing'] : ['tts'],
+      tasks: tasksOfEntry(entry),
       service: entry.id,
       source: 'config',
     };
@@ -802,24 +802,32 @@ export class ServiceWorld implements World {
     });
   }
 
-  /** 在启用条目里按 model 选一个;没有 model 时按配置顺序取第一个。 */
+  /** 在启用条目里按模型任务和 model 选一个;没有 model 时按配置顺序取第一个。 */
   private selectJsonEntry(
-    protocol: 'systemone' | 'llamacpp',
+    task: 'systemone' | 'embeddings' | 'rerank',
     requested: string | undefined,
     label: string,
   ): ServiceEntry {
     const entries = this.manager.entries()
-      .filter((entry) => entry.enabled && protocolOf(entry) === protocol);
+      .filter((entry) => entry.enabled && tasksOfEntry(entry).includes(task));
     if (!entries.length) throw ServiceError.unavailable(`no ${label} service configured`);
     const wanted = requested?.trim();
-    if (!wanted) return entries[0]!;
+    if (!wanted) {
+      return entries.find((entry) => this.manager.statusOf(entry.id)?.phase === 'online') ?? entries[0]!;
+    }
     const found = this.catalog.find(wanted, entries);
     if (found) return found.entry;
     const configured = entries.find((entry) => (entry.models ?? [])
       .some((model) => model.toLowerCase() === wanted.toLowerCase()));
     if (configured) return configured;
-    // 单条目没有歧义,未知模型也透传,和 speech 的行为一致。
-    if (entries.length === 1) return entries[0]!;
+    // 单条目没有歧义,未知模型也透传,和 speech 的行为一致；但已知模型属于别的任务时不能误投。
+    if (entries.length === 1) {
+      const known = this.catalog.find(wanted, this.manager.entries());
+      if (known && known.entry.id !== entries[0]!.id) {
+        throw ServiceError.notfound(`model ${wanted} does not handle ${task}`, 'model');
+      }
+      return entries[0]!;
+    }
     throw ServiceError.notfound(`unknown model: ${wanted}`, 'model');
   }
 
@@ -870,16 +878,32 @@ export class ServiceWorld implements World {
     if (!status || status.phase !== 'online') {
       throw ServiceError.unavailable(`service ${entry.id} is not ready`);
     }
-    const adapter = adapterOf(entry);
+    // 外部 systemone 用条目自己的端点；llama.cpp 托管的 StartLux 用伴生 startlux-decide。
+    const companionSecret = typeof entry.options?.systemoneSecretName === 'string'
+      ? entry.options.systemoneSecretName.trim()
+      : '';
+    const target: ServiceEntry = entry.type === 'systemone'
+      ? entry
+      : {
+        ...entry,
+        type: 'systemone',
+        endpoint: systemoneEndpointOf(entry),
+        ...(companionSecret ? { secretName: companionSecret } : {}),
+      };
+    const adapter = adapterOf(target);
     if (!adapter.systemone) {
       throw ServiceError.unsupported(`service ${entry.id} does not support systemone`);
     }
     const call = adapter.systemone;
-    return this.jsonCall('systemone', entry, () => call(this.jsonRequest(entry, request.body, signal)));
+    return this.jsonCall('systemone', entry, () => call(this.jsonRequest(target, request.body, signal)));
   }
 
   private async embeddings(request: EmbeddingsRequest, signal: AbortSignal): Promise<JsonResult> {
-    const entry = this.selectJsonEntry('llamacpp', request.model, 'llamacpp');
+    const entry = this.selectJsonEntry('embeddings', request.model, 'llamacpp');
+    const status = this.manager.statusOf(entry.id);
+    if (!status || status.phase !== 'online') {
+      throw ServiceError.unavailable(`service ${entry.id} is not ready`);
+    }
     const adapter = adapterOf(entry);
     if (!adapter.embeddings) {
       throw ServiceError.unsupported(`service ${entry.id} does not support embeddings`);
@@ -889,7 +913,11 @@ export class ServiceWorld implements World {
   }
 
   private async rerank(request: RerankRequest, signal: AbortSignal): Promise<JsonResult> {
-    const entry = this.selectJsonEntry('llamacpp', request.model, 'llamacpp');
+    const entry = this.selectJsonEntry('rerank', request.model, 'llamacpp');
+    const status = this.manager.statusOf(entry.id);
+    if (!status || status.phase !== 'online') {
+      throw ServiceError.unavailable(`service ${entry.id} is not ready`);
+    }
     const adapter = adapterOf(entry);
     if (!adapter.rerank) {
       throw ServiceError.unsupported(`service ${entry.id} does not support rerank`);
