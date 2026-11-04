@@ -309,7 +309,7 @@ async function invoke(method, args = []) {
       return [
         'Qwen3-Embedding-0.6B-Q8_0',
         'Qwen3-Reranker-0.6B.Q4_K_M',
-        'StartLux-Decision-v1.1-0.8B-Instant-Q8_0',
+        'StartLux Decision Q8_0',
       ];
     case 'saveGateway':
       Object.assign(state.gateway, args[0]);
@@ -691,8 +691,8 @@ assert.equal(llamaAdd.args[0].type, 'llamacpp');
 assert.deepEqual(llamaAdd.args[0].tasks, ['chat'], 'chat task saves');
 assert.deepEqual(llamaAdd.args[0].models, [
   'Qwen3-Embedding-0.6B-Q8_0',
-  'StartLux-Decision-v1.1-0.8B-Instant-Q8_0',
-], 'multi-select models save');
+  'StartLux Decision Q8_0',
+], 'multi-select models save with spaces intact');
 assert.deepEqual(llamaAdd.args[0].options, {
   launchMode: 'router',
   modelsDir: 'D:/models',

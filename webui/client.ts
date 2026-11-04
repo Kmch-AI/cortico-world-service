@@ -191,6 +191,8 @@ interface FormSeed {
   secretName: string;
   modelProfile: string;
   models: string;
+  /** 模型名的真值；llamacpp 的模型名可能含空格或逗号，不能只靠 models 字符串往返。 */
+  modelList: string[];
   tasks: string;
   launchMode: string;
   optionsText: string;
@@ -270,6 +272,7 @@ function newDraft(T: PanelText): DraftState {
     secretName: '',
     modelProfile: '',
     models: '',
+    modelList: [],
     tasks: '',
     launchMode: 'router',
     optionsText: '',
@@ -307,6 +310,7 @@ function seedOfEntry(entry: ServiceEntry): FormSeed {
     secretName: entry.secretName ?? '',
     modelProfile: entry.modelProfile ?? '',
     models: (entry.models ?? []).join(', '),
+    modelList: [...(entry.models ?? [])],
     // 编辑旧条目时按后端的有效默认显示；新建草稿才用 chat。
     tasks: entry.type === 'llamacpp' && !entry.tasks?.length
       ? tasksOfEntry(entry).join(',')
@@ -497,7 +501,7 @@ function buildServiceForm(
   };
 
   // 模型文件选择:多模型多选、单模型单选;文件列表从服务端读 GGUF 目录。
-  const selectedModels = seed.models.split(/[\s,]+/).map((item) => item.trim()).filter(Boolean);
+  const selectedModels = [...seed.modelList];
   let scannedFiles: string[] = [];
   let scanToken = 0;
   let scanTimer: { dispose(): void } | null = null;
@@ -580,6 +584,15 @@ function buildServiceForm(
   };
   modelsDir.addEventListener('input', scheduleScan, { signal: ctx.signal });
   modelsDir.addEventListener('change', scheduleScan, { signal: ctx.signal });
+  // 非 llamacpp 类型仍用逗号分隔的模型表；切到 llamacpp 时把这份文本同步成选择列表。
+  models.addEventListener('input', () => {
+    if ((type.value as ServiceType) === 'llamacpp') return;
+    selectedModels.splice(
+      0,
+      selectedModels.length,
+      ...models.value.split(/[\s,]+/).map((item) => item.trim()).filter(Boolean),
+    );
+  }, { signal: ctx.signal });
 
   const identity = ui.sheet({ title: T.sectionIdentity });
   identity.el.classList.add('connection-identity');
@@ -765,6 +778,7 @@ function buildServiceForm(
         secretName: secretName.value,
         modelProfile: modelProfile.value,
         models: models.value,
+        modelList: [...selectedModels],
         tasks: tasks.value,
         launchMode: launchMode.value,
         optionsText: optionsArea.value,
@@ -1147,7 +1161,7 @@ const servicesPanel: WebUiPanel = {
           node.typeValue.textContent = typeLabel(draft.type);
           node.modelValue.textContent = modelSummaryOf(
             draft.type,
-            draft.models.split(/[\s,]+/),
+            draft.type === 'llamacpp' ? draft.modelList : draft.models.split(/[\s,]+/),
             draft.modelDir,
           ) || T.none;
           paintPhase(node, draftPhase(T));
@@ -1273,7 +1287,7 @@ const servicesPanel: WebUiPanel = {
           { k: T.rowAddress, v: mono(current.endpoint.trim() || T.none) },
           { k: T.rowModels, v: mono(modelSummaryOf(
             current.type,
-            current.models.split(/[\s,]+/),
+            current.type === 'llamacpp' ? current.modelList : current.models.split(/[\s,]+/),
             current.modelDir,
           ) || T.none) },
           { k: T.rowPid, v: mono(T.none) },

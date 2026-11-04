@@ -175,7 +175,7 @@ corepack pnpm add "D:/path/to/cortico-world-service" --ignore-workspace
   - `router`（多模型）：`llama-server --host --port --models-dir <options.modelsDir>`。面板从 GGUF 目录读取 `.gguf` 让你多选；选中的模型写进 `models`，用于目录与请求兜底。llama-server 会按需加载目录里的模型。
   - `single`（单模型）：`llama-server --host --port -m <modelsDir>/<选中的模型>.gguf`。面板只允许选一个；`-m` / `--model` 已经写在 `args` 里时保留原值。
   - 两种模式都读取 `options.cacheDir`（设为 `LLAMA_CACHE`）、`options.contextSize`（`-c`）、`options.nGpuLayers`（`-ngl`）、`options.parallel`（`--parallel`）；`args` 里的同名参数优先。任务 `embeddings` 加 `--embeddings`，`rerank` 加 `--reranking`，`chat` 不加旗标。
-  - 0.8 及更早的 `serve` 配置按多模型处理，残留的 `serve` 子命令会被清掉；不再有 `llama serve` 启动方式。
+  - 0.8 及更早的 `serve` 配置按多模型处理，残留的 `serve` 子命令会被清掉；带 `-m` / `--model` 的按单模型。既没有 `modelsDir` 也没有模型参数的旧 serve 配置会提示迁移，不再有 `llama serve` 启动方式。
 - `startlux`（StartLux Decision）：默认 `<serverDir>/.venv/Scripts/startlux-decide(.exe)`（POSIX 为 `.venv/bin/startlux-decide`），也可以手填 `binary`。**直接运行 venv 里的入口即可，不需要先 activate**；工作目录是 `serverDir`。
   - 参数：`serve --model <options.modelDir> --backend llamacpp --llamacpp-url <上游> --host <endpoint host> --port <endpoint port>`，可选 `--think-mode`、`--gate`，最后追加条目 `args`（受管参数会被清掉）。
   - 上游：`options.llamacppService` 写一条 llama.cpp 条目的 id，地址取该条目的 `endpoint`；没有 id 时用 `options.llamacppUrl`。两者必须有一个。
@@ -235,7 +235,7 @@ StartLux 0.8B Instant 本地部署要点：
 从 0.8.x 迁移：
 
 - 本地 StartLux 拆成两条：一条 `type: llamacpp` 挂 GGUF（`tasks: ['chat']`，单模型或多模型都可），一条 `type: startlux` 挂 BF16 模型目录。旧的 `startluxDir` / `startluxBinary` / `startluxArgs` / `systemonePort` / `systemoneUrl` / `systemoneSecretName` 不再使用；`modelDir`、`thinkMode`、`gate`、`instant` 移到 startlux 条目。
-- llama.cpp 条目的 `launchMode: 'serve'` 按 `router` 处理；`serve` 子命令会被清掉。新建条目只有 `router`（多模型）与 `single`（单模型）两种。
+- llama.cpp 条目的 `launchMode: 'serve'` 按 `router` 处理；`serve` 子命令会被清掉。带 `-m` / `--model` 的旧 serve 配置按单模型；没有 `modelsDir` 也没有模型参数的会提示迁移。新建条目只有 `router`（多模型）与 `single`（单模型）两种。
 - 0.7.0 及更早的 `type: llamacpp` + `tasks: ['systemone']` 会被标成迁移错误，不拉起进程。
 - 旧 `svc` / `custom` 类型不再出现在面板与类型表里；旧配置的协议仍按原样处理，但保存前要把类型改成新类型。
 

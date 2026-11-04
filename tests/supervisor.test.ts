@@ -234,6 +234,39 @@ describe('Supervisor', () => {
     await sup.stop();
   });
 
+  it('旧的 serve 配置带 -m 时按单模型启动', async () => {
+    const { sup, h } = make({
+      id: 'one', name: 'one', type: 'llamacpp',
+      endpoint: 'http://127.0.0.1:8081',
+      serverDir: 'C:/llama',
+      args: 'serve -m D:/models/a.gguf',
+      tasks: ['chat'],
+      options: { launchMode: 'serve' },
+    }, { healthFails: 1 });
+    await sup.start();
+    const launch = h.launches[0]!;
+    expect(launch.command).toMatch(/llama-server(\.exe)?$/);
+    expect(launch.args).not.toContain('serve');
+    expect(launch.args).toContain('-m');
+    expect(launch.args).toContain('D:/models/a.gguf');
+    await sup.stop();
+  });
+
+  it('没有模型信息的旧 serve 配置提示迁移', async () => {
+    const { sup, h } = make({
+      id: 'empty', name: 'empty', type: 'llamacpp',
+      endpoint: 'http://127.0.0.1:8081',
+      serverDir: 'C:/llama',
+      args: 'serve',
+      tasks: ['chat'],
+      options: { launchMode: 'serve' },
+    }, { healthFails: 1 });
+    await sup.start();
+    expect(h.launches).toEqual([]);
+    expect(sup.status().phase).toBe('off');
+    expect(sup.status().detail).toContain('legacy llama serve');
+  });
+
   it('llamacpp 单模型从 GGUF 目录补 -m', async () => {
     const { sup, h } = make({
       id: 'one', name: 'one', type: 'llamacpp',

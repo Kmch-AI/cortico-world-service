@@ -407,6 +407,23 @@ export class Supervisor {
     if (this.entry.type === 'llamacpp' && tasksOfEntry(this.entry).includes('systemone')) {
       return 'llama.cpp no longer hosts systemone; add a StartLux Decision service';
     }
+    if (this.entry.type === 'llamacpp') {
+      const rawArgs = this.entry.args ?? '';
+      const legacyServe = this.entry.options?.launchMode === 'serve'
+        || /(^|\s)serve(\s|$)/.test(rawArgs);
+      if (legacyServe) {
+        const binary = (this.entry.binary?.trim() ?? '').split(/[\\/]/).pop()?.toLowerCase() ?? '';
+        if (/^llama(\.exe)?$/.test(binary)) {
+          return 'llama serve was removed; use llama-server or change the launch mode';
+        }
+        const hasModel = /(^|\s)(-m|--model)(\s|=)/.test(rawArgs);
+        const hasDir = Boolean(optionString(this.entry, 'modelsDir'))
+          || /(^|\s)--models-dir(\s|=)/.test(rawArgs);
+        if (!hasModel && !hasDir) {
+          return 'legacy llama serve config has no model; set options.modelsDir or add -m to args';
+        }
+      }
+    }
     if (this.entry.type === 'systemone' && optionString(this.entry, 'modelDir')
       && !this.entry.binary?.trim()) {
       return 'local StartLux moved to the StartLux Decision type';

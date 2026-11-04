@@ -4,13 +4,13 @@
 - StartLux 不再挂在 `llamacpp` 条目下：删掉伴生 `startlux-decide`、`systemonePort`、`startluxDir` / `startluxBinary` / `startluxArgs`、`systemoneUrl` / `systemoneSecretName` 与两进程编排。`llamacpp` 只托管 `llama-server` 与 GGUF。
 - 新类型 `startlux` 启动 `<serverDir>/.venv/Scripts/startlux-decide(.exe)`（也可手填 `binary`），工作目录是仓库根目录；直接运行 venv 入口即可，不需要先 activate。参数 `serve --model <options.modelDir> --backend llamacpp --llamacpp-url <上游> --host --port`，可选 `--think-mode` / `--gate`，并设 `STARTLUX_LLAMACPP_BIDIR=server`。条目地址就是 `/v1/systemone` 端口。
 - StartLux Decision 的 llama.cpp 上游用 `options.llamacppService`（条目 id，地址取该条目 endpoint）或 `options.llamacppUrl`；两者必须有一个。`options.modelDir` 必填。
-- `llamacpp` 去掉 `llama serve`：只剩 `router`（多模型，`--models-dir`）与 `single`（单模型，`-m`）。旧 `launchMode: 'serve'` 与空配置按多模型处理，残留的 `serve` 子命令会被清掉。
+- `llamacpp` 去掉 `llama serve`：只剩 `router`（多模型，`--models-dir`）与 `single`（单模型，`-m`）。旧 `launchMode: 'serve'` 与空配置按多模型处理，带 `-m` 的旧 serve 配置按单模型；残留的 `serve` 子命令会被清掉，没有模型信息的旧 serve 配置会提示迁移。
 - 面板的 llama.cpp 模型选择改为读取 GGUF 目录：多模型多选，单模型单选；选中的模型写进 `models`，单模型自动补 `-m <modelsDir>/<模型>.gguf`。服务端新增 `modelFiles` 面板方法，只列 `.gguf`（最多 1000 个、4 层子目录），返回去掉扩展名的相对路径。
 - 任务新增 `chat`（只提供模型，不加 `--embeddings` / `--reranking`）；`llamacpp` 条目再带 `systemone` 任务会在启动前提示迁移到 StartLux Decision。
 - `/v1/systemone` 直接把请求转发到 `startlux` / `systemone` 条目自己的端点，不再做伴生端点改写。
 - 服务面板：卡片类型药丸用显示名；模型药丸多选时显示首个 `+N`；StartLux Decision 增加模型目录、llama.cpp 服务/地址、思考模式/阈值、Instant 与 venv 说明；删除伴生 PID 行。
 - 面板回归修复：编辑没有显式 `tasks` 的旧 llama.cpp 条目时保持后端的 `embeddings` + `rerank` 默认；单模型只在 `args` 里写 `-m`、没有 GGUF 目录时允许保存；从 `openai` / `systemone` 切到 `startlux` 时恢复「托管进程」勾选。
-- 服务包 11 个文件 182 个测试全绿；typecheck、build:webui、smoke:webui 通过。
+- 服务包 11 个文件 184 个测试全绿；typecheck、build:webui、smoke:webui 通过。
 - 版本按类型与启动方式变更升 minor。
 
 ## 0.8.1
