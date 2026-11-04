@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  endpointUrl, healthPathOf, healthUrl, hostPort, isStartLuxEntry, primaryOrigin, protocolOf,
-  serverJsonPath, serviceIdFor, slugify, systemoneEndpointOf, systemoneHostPort, tasksOfEntry,
+  endpointUrl, healthPathOf, healthUrl, hostPort, isStartLuxEntry, llamacppLaunchMode, primaryOrigin,
+  protocolOf, serverJsonPath, serviceIdFor, slugify, systemoneEndpointOf, systemoneHostPort, tasksOfEntry,
 } from '../src/entry.ts';
 import { normalizeEntry, validateServices } from '../src/validate.ts';
 import type { ServiceEntry, ServiceType } from '../src/types.ts';
@@ -50,11 +50,26 @@ describe('model tasks', () => {
     expect(isStartLuxEntry(entry({ type: 'systemone' }))).toBe(false);
   });
 
+  it('llamacpp 启动方式：显式优先，旧 args 可推断，空配置默认 serve', () => {
+    expect(llamacppLaunchMode(entry({ type: 'llamacpp' }))).toBe('serve');
+    expect(llamacppLaunchMode(entry({ type: 'llamacpp', options: { launchMode: 'router' } })))
+      .toBe('router');
+    expect(llamacppLaunchMode(entry({ type: 'llamacpp', args: 'serve --models-dir D:/models' })))
+      .toBe('serve');
+    expect(llamacppLaunchMode(entry({ type: 'llamacpp', args: '--models-dir D:/models' })))
+      .toBe('router');
+    expect(llamacppLaunchMode(entry({ type: 'llamacpp', args: '-m D:/models/a.gguf' })))
+      .toBe('single');
+    expect(llamacppLaunchMode(entry({ type: 'llamacpp', tasks: ['systemone'], args: 'serve' })))
+      .toBe('single');
+    expect(llamacppLaunchMode(entry({ type: 'audiocpp' }))).toBe('single');
+  });
+
   it('systemone 上游：外部用 endpoint，本地用伴生端口', () => {
     expect(systemoneEndpointOf(entry({ type: 'systemone', endpoint: 'https://sys.example.com' })))
       .toBe('https://sys.example.com');
     expect(systemoneEndpointOf(entry({ type: 'llamacpp', endpoint: 'http://127.0.0.1:8081' })))
-      .toBe('http://127.0.0.1:8090');
+      .toBe('http://127.0.0.1:8091');
     expect(systemoneEndpointOf(entry({
       type: 'llamacpp', endpoint: 'http://127.0.0.1:8081', options: { systemonePort: 9090 },
     }))).toBe('http://127.0.0.1:9090');
@@ -81,7 +96,7 @@ describe('endpointUrl', () => {
     expect(endpointUrl(entry({ type: 'sing', endpoint: '127.0.0.1' }))).toBe('http://127.0.0.1:9882');
     expect(endpointUrl(entry({ type: 'svc', endpoint: 'http://127.0.0.1' }))).toBe('http://127.0.0.1:9882');
     expect(endpointUrl(entry({ type: 'systemone', endpoint: 'http://127.0.0.1' })))
-      .toBe('http://127.0.0.1:8090');
+      .toBe('http://127.0.0.1:8091');
     expect(endpointUrl(entry({ type: 'llamacpp', endpoint: 'http://127.0.0.1' })))
       .toBe('http://127.0.0.1:8081');
     // 外部域名不套本地预设端口,仍按协议取 80/443。
@@ -106,7 +121,7 @@ describe('hostPort', () => {
     expect(hostPort(entry({ type: 'sing', endpoint: 'http://0.0.0.0:9999' })))
       .toEqual({ host: '0.0.0.0', port: 9999 });
     expect(hostPort(entry({ type: 'systemone', endpoint: 'http://127.0.0.1' })))
-      .toEqual({ host: '127.0.0.1', port: 8090 });
+      .toEqual({ host: '127.0.0.1', port: 8091 });
     expect(hostPort(entry({ type: 'llamacpp', endpoint: 'http://127.0.0.1' })))
       .toEqual({ host: '127.0.0.1', port: 8081 });
     expect(hostPort(entry({ type: 'openai', endpoint: 'https://api.example.com/v1' })))

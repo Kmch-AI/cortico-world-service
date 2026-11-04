@@ -16,6 +16,7 @@ import {
   type PanelTokenResult,
 } from '../src/panel.ts';
 import type { ServiceEntry, ServiceType } from '../src/types.ts';
+import { llamacppLaunchMode } from '../src/entry.ts';
 import { panelText, type PanelText } from './strings.ts';
 import './style.css';
 
@@ -28,7 +29,7 @@ const DEFAULT_ENDPOINTS: Partial<Record<ServiceType, string>> = {
   sing: 'http://127.0.0.1:9882',
   svc: 'http://127.0.0.1:9882',
   llamacpp: 'http://127.0.0.1:8081',
-  systemone: 'http://127.0.0.1:8090',
+  systemone: 'http://127.0.0.1:8091',
 };
 
 const DRAFT_KEY = '__draft__';
@@ -176,6 +177,7 @@ interface FormSeed {
   modelProfile: string;
   models: string;
   tasks: string;
+  launchMode: string;
   optionsText: string;
 }
 
@@ -185,6 +187,11 @@ interface RuntimeFields {
   threads: string;
   idleUnloadMs: string;
   ui: boolean;
+  modelsDir: string;
+  cacheDir: string;
+  contextSize: string;
+  nGpuLayers: string;
+  parallel: string;
   modelDir: string;
   startluxDir: string;
   startluxBinary: string;
@@ -249,12 +256,18 @@ function newDraft(T: PanelText): DraftState {
     modelProfile: '',
     models: '',
     tasks: '',
+    launchMode: 'serve',
     optionsText: '',
     backend: '',
     device: '',
     threads: '',
     idleUnloadMs: '',
     ui: true,
+    modelsDir: '',
+    cacheDir: '',
+    contextSize: '',
+    nGpuLayers: '',
+    parallel: '',
     modelDir: '',
     startluxDir: '',
     startluxBinary: '',
@@ -281,7 +294,8 @@ function seedOfEntry(entry: ServiceEntry): FormSeed {
     secretName: entry.secretName ?? '',
     modelProfile: entry.modelProfile ?? '',
     models: (entry.models ?? []).join(', '),
-    tasks: (entry.tasks ?? []).join(', '),
+    tasks: (entry.tasks ?? []).join(','),
+    launchMode: entry.type === 'llamacpp' ? llamacppLaunchMode(entry) : '',
     optionsText: entry.options && Object.keys(entry.options).length
       ? JSON.stringify(entry.options, null, 2)
       : '',
@@ -307,6 +321,11 @@ function runtimeOfOptions(options: Record<string, unknown> | null): RuntimeField
     threads: numberText(options?.threads),
     idleUnloadMs: numberText(options?.idleUnloadMs),
     ui: options?.ui !== false,
+    modelsDir: typeof options?.modelsDir === 'string' ? options.modelsDir : '',
+    cacheDir: typeof options?.cacheDir === 'string' ? options.cacheDir : '',
+    contextSize: numberText(options?.contextSize),
+    nGpuLayers: typeof options?.nGpuLayers === 'string' ? options.nGpuLayers : '',
+    parallel: numberText(options?.parallel),
     modelDir: typeof options?.modelDir === 'string' ? options.modelDir : '',
     startluxDir: typeof options?.startluxDir === 'string' ? options.startluxDir : '',
     startluxBinary: typeof options?.startluxBinary === 'string' ? options.startluxBinary : '',
@@ -377,13 +396,34 @@ function buildServiceForm(
     { value: 'rerank', label: 'Rerank' },
     { value: 'systemone', label: T.taskSystemone },
   ];
-  if (seed.tasks && !taskOptions.some((option) => option.value === seed.tasks)) {
-    taskOptions.push({ value: seed.tasks, label: seed.tasks });
+  // 任务列表用逗号存储；旧配置可能带空格，先归一化再匹配预设，避免下拉框退化成自定义文本。
+  const seedTasks = seed.tasks.replace(/\s*,\s*/g, ',');
+  if (seedTasks && !taskOptions.some((option) => option.value === seedTasks)) {
+    taskOptions.push({ value: seedTasks, label: seedTasks });
   }
   const tasks = ui.select({
-    value: seed.tasks || 'embeddings,rerank',
+    value: seedTasks || 'embeddings,rerank',
     options: taskOptions,
   });
+  const launchMode = ui.select({
+    value: seed.launchMode || 'serve',
+    options: [
+      { value: 'serve', label: T.launchServe },
+      { value: 'router', label: T.launchRouter },
+      { value: 'single', label: T.launchSingle },
+    ],
+  });
+  const modelsDir = ui.input({ value: runtime.modelsDir, cls: 'mono' });
+  const cacheDir = ui.input({ value: runtime.cacheDir, cls: 'mono' });
+  const contextSize = ui.input({ type: 'number', value: runtime.contextSize });
+  contextSize.min = '0';
+  contextSize.step = '1';
+  contextSize.placeholder = '16384';
+  const nGpuLayers = ui.input({ value: runtime.nGpuLayers, cls: 'mono', placeholder: 'auto' });
+  const parallel = ui.input({ type: 'number', value: runtime.parallel });
+  parallel.min = '1';
+  parallel.step = '1';
+  parallel.placeholder = '1';
   const modelDir = ui.input({ value: runtime.modelDir, cls: 'mono' });
   const startluxDir = ui.input({ value: runtime.startluxDir });
   const startluxBinary = ui.input({ value: runtime.startluxBinary, cls: 'mono', placeholder: 'startlux-decide.exe' });
@@ -405,7 +445,7 @@ function buildServiceForm(
   const secretName = ui.input({
     value: seed.secretName,
     cls: 'mono',
-    placeholder: 'SERVICE_TOKEN',
+    placeholder: 'SERVICE_API_KEY',
   });
   const modelProfile = ui.input({ value: seed.modelProfile, placeholder: 'auto' });
   const models = ui.input({ value: seed.models });
@@ -487,6 +527,19 @@ function buildServiceForm(
   );
   runtimeSection.body.append(processGroup);
 
+  const modelsDirField = fieldBlock(ui, T.fieldModelsDir, pathRow(modelsDir, 'directory'), T.modelsDirNote);
+  const cacheDirField = fieldBlock(ui, T.fieldCacheDir, pathRow(cacheDir, 'directory'), T.cacheDirNote);
+  const llamacppGroup = ui.h('div', 'svc-process');
+  llamacppGroup.append(
+    fieldBlock(ui, T.fieldLaunchMode, launchMode, T.launchModeNote),
+    modelsDirField,
+    cacheDirField,
+    fieldBlock(ui, T.fieldContextSize, contextSize, T.contextSizeNote),
+    fieldBlock(ui, T.fieldNgl, nGpuLayers, T.nglNote),
+    fieldBlock(ui, T.fieldParallel, parallel, T.parallelNote),
+  );
+  runtimeSection.body.append(llamacppGroup);
+
   const systemoneGroup = ui.h('div', 'svc-process');
   systemoneGroup.append(
     ui.h('h4', 'svc-group-title', T.systemonePreset),
@@ -537,9 +590,13 @@ function buildServiceForm(
     const current = type.value as ServiceType;
     const managed = manage.checked;
     const startlux = current === 'llamacpp' && tasks.value === 'systemone';
+    const llama = current === 'llamacpp' && !startlux;
     processGroup.hidden = !managed;
+    llamacppGroup.hidden = !(managed && llama);
+    modelsDirField.hidden = launchMode.value === 'single';
+    cacheDirField.hidden = launchMode.value === 'single';
     systemoneGroup.hidden = !(managed && startlux);
-    tuningGroup.hidden = !(managed && (current === 'audiocpp' || (current === 'llamacpp' && !startlux)));
+    tuningGroup.hidden = !(managed && current === 'audiocpp');
     audiocppGroup.hidden = !(managed && current === 'audiocpp');
     tasksField.hidden = current !== 'llamacpp';
     profileField.hidden = current === 'llamacpp';
@@ -547,6 +604,7 @@ function buildServiceForm(
 
   manage.input.addEventListener('change', syncVisibility, { signal: ctx.signal });
   tasks.addEventListener('change', syncVisibility, { signal: ctx.signal });
+  launchMode.addEventListener('change', syncVisibility, { signal: ctx.signal });
   type.addEventListener('change', () => {
     const next = type.value as ServiceType;
     typeNoteEl.textContent = typeNote(T, next);
@@ -580,6 +638,7 @@ function buildServiceForm(
         modelProfile: modelProfile.value,
         models: models.value,
         tasks: tasks.value,
+        launchMode: launchMode.value,
         optionsText: optionsArea.value,
       },
       runtime: {
@@ -588,6 +647,11 @@ function buildServiceForm(
         threads: threads.value,
         idleUnloadMs: idleUnloadMs.value,
         ui: uiBox.checked,
+        modelsDir: modelsDir.value,
+        cacheDir: cacheDir.value,
+        contextSize: contextSize.value,
+        nGpuLayers: nGpuLayers.value,
+        parallel: parallel.value,
         modelDir: modelDir.value,
         startluxDir: startluxDir.value,
         startluxBinary: startluxBinary.value,
@@ -625,6 +689,12 @@ function buildServiceForm(
     const startlux = manage.checked && typeValue === 'llamacpp' && tasks.value === 'systemone';
     if (manage.checked && typeValue === 'llamacpp') {
       if (startlux) {
+        delete options.launchMode;
+        delete options.modelsDir;
+        delete options.cacheDir;
+        delete options.contextSize;
+        delete options.nGpuLayers;
+        delete options.parallel;
         const modelDirValue = modelDir.value.trim();
         if (!modelDirValue) return { error: T.badModelDir };
         options.modelDir = modelDirValue;
@@ -683,11 +753,55 @@ function buildServiceForm(
         delete options.thinkMode;
         delete options.gate;
         delete options.instant;
+
+        const mode = launchMode.value;
+        options.launchMode = mode;
+
+        const modelsDirValue = modelsDir.value.trim();
+        if (mode !== 'single' && modelsDirValue) options.modelsDir = modelsDirValue;
+        else delete options.modelsDir;
+
+        const cacheDirValue = cacheDir.value.trim();
+        if (mode !== 'single' && cacheDirValue) options.cacheDir = cacheDirValue;
+        else delete options.cacheDir;
+
+        const contextText = contextSize.value.trim();
+        if (contextText) {
+          const value = Number(contextText);
+          if (!Number.isInteger(value) || value < 0) return { error: T.badContextSize };
+          options.contextSize = value;
+        } else {
+          delete options.contextSize;
+        }
+
+        const nglText = nGpuLayers.value.trim();
+        if (nglText) {
+          if (!/^(auto|all|\d+)$/i.test(nglText)) return { error: T.badNgl };
+          options.nGpuLayers = nglText.toLowerCase();
+        } else {
+          delete options.nGpuLayers;
+        }
+
+        const parallelText = parallel.value.trim();
+        if (parallelText) {
+          const value = Number(parallelText);
+          if (!Number.isInteger(value) || value < 1) return { error: T.badParallel };
+          options.parallel = value;
+        } else {
+          delete options.parallel;
+        }
       }
       delete options.llamacppUrl;
+    } else if (typeValue !== 'llamacpp') {
+      delete options.launchMode;
+      delete options.modelsDir;
+      delete options.cacheDir;
+      delete options.contextSize;
+      delete options.nGpuLayers;
+      delete options.parallel;
     }
 
-    if (manage.checked && (typeValue === 'audiocpp' || typeValue === 'llamacpp')) {
+    if (manage.checked && typeValue === 'audiocpp') {
       const backendValue = backend.value.trim();
       if (backendValue) options.backend = backendValue;
       else delete options.backend;
@@ -1040,6 +1154,11 @@ const servicesPanel: WebUiPanel = {
           threads: current.threads,
           idleUnloadMs: current.idleUnloadMs,
           ui: current.ui,
+          modelsDir: current.modelsDir,
+          cacheDir: current.cacheDir,
+          contextSize: current.contextSize,
+          nGpuLayers: current.nGpuLayers,
+          parallel: current.parallel,
           modelDir: current.modelDir,
           startluxDir: current.startluxDir,
           startluxBinary: current.startluxBinary,

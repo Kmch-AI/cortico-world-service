@@ -7,11 +7,12 @@ import { createWriteStream, existsSync, mkdirSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import type { Logger } from 'cortico/core/types.ts';
 import {
-  endpointUrl, healthPathOf, healthUrl, hostPort, isStartLuxEntry, protocolOf,
-  primaryOrigin, serverJsonPath, systemoneEndpointOf, systemoneHostPort, tasksOfEntry,
+  endpointUrl, healthPathOf, healthUrl, hostPort, isStartLuxEntry, llamacppLaunchMode,
+  protocolOf, primaryOrigin, serverJsonPath, systemoneEndpointOf, systemoneHostPort, tasksOfEntry,
+  type LlamacppLaunchMode,
 } from './entry.ts';
 import { apiUrl } from './protocol/http.ts';
-import type { Phase, ServiceEntry, ServiceStatus, ServiceType } from './types.ts';
+import type { Phase, ServiceEntry, ServiceStatus } from './types.ts';
 
 export interface ChildLike {
   pid?: number;
@@ -57,6 +58,11 @@ function ensureAnyArg(args: string[], names: readonly string[], value: string): 
   if (!names.some((name) => hasArg(args, name))) args.push(names[0]!, value);
 }
 
+/** 一组同义参数里是否已有任意一个。 */
+function hasAnyArg(args: readonly string[], names: readonly string[]): boolean {
+  return names.some((name) => hasArg(args, name));
+}
+
 /** 移除 name 及其值（同时处理 name=value）。 */
 function stripArg(args: string[], name: string): void {
   for (let index = args.length - 1; index >= 0; index -= 1) {
@@ -77,6 +83,12 @@ function setArg(args: string[], name: string, value: string): void {
     }
   }
   args.push(name, value);
+}
+
+/** 一组同义参数强制成第一个名字；其余同义写法一并移除。 */
+function setAnyArg(args: string[], names: readonly string[], value: string): void {
+  for (const name of names) stripArg(args, name);
+  args.push(names[0]!, value);
 }
 
 export interface SupervisorDeps {
@@ -157,11 +169,13 @@ export function idleServiceStatus(entry: ServiceEntry): ServiceStatus {
 }
 
 /** 有预设可执行名的类型;其余类型需要操作者给 binary。 */
-function defaultBinary(type: ServiceType): string {
+function defaultBinary(entry: ServiceEntry): string {
   const exe = process.platform === 'win32' ? '.exe' : '';
-  switch (type) {
+  switch (entry.type) {
     case 'audiocpp': return `audiocpp_server${exe}`;
-    case 'llamacpp': return `llama-server${exe}`;
+    case 'llamacpp':
+      // llama.app 的二进制是 llama，ggml-org 的 llama-server 没有 serve 子命令。
+      return llamacppLaunchMode(entry) === 'serve' ? `llama${exe}` : `llama-server${exe}`;
     default: return '';
   }
 }
@@ -177,14 +191,23 @@ function looksLikePath(value: string): boolean {
   return isAbsolute(value) || value.includes('/') || value.includes('\\');
 }
 
-function resolveCommand(entry: ServiceEntry): { command: string; checkExists: boolean } | { error: string } {
+function resolveCommand(
+  entry: ServiceEntry,
+  exists: (path: string) => boolean,
+): { command: string; checkExists: boolean } | { error: string } {
   const serverDir = entry.serverDir?.trim() ?? '';
   const raw = entry.binary?.trim() ?? '';
-  const binary = raw || defaultBinary(entry.type);
+  let binary = raw || defaultBinary(entry);
   if (!binary) {
     return { error: `binary is required for type ${entry.type}` };
   }
   if (!raw && !serverDir) return { error: 'serverDir is empty' };
+  // llama.app 的二进制叫 llama；有些 Windows 构建沿用 llama-server。serve 模式两个都找。
+  if (!raw && entry.type === 'llamacpp' && llamacppLaunchMode(entry) === 'serve') {
+    const exe = process.platform === 'win32' ? '.exe' : '';
+    const fallback = `llama-server${exe}`;
+    if (!exists(join(serverDir, binary)) && exists(join(serverDir, fallback))) binary = fallback;
+  }
   const command = isAbsolute(binary) || !serverDir ? binary : join(serverDir, binary);
   return { command, checkExists: looksLikePath(command) };
 }
@@ -320,7 +343,7 @@ export class Supervisor {
 
     let primaryPlan: LaunchPlan | null = null;
     if (!primaryReady) {
-      const resolved = resolveCommand(this.entry);
+      const resolved = resolveCommand(this.entry, (path) => this.deps.exists(path));
       if ('error' in resolved) {
         this.setPhase('off', resolved.error);
         return;
@@ -330,12 +353,19 @@ export class Supervisor {
         return;
       }
       const serverDir = this.entry.serverDir?.trim() ?? '';
+      const env: Record<string, string> = {};
+      if (this.entry.type === 'llamacpp') {
+        // llama.app 和 llama.cpp 都用 LLAMA_CACHE 找已下载的模型；不下载，只复用。
+        const cacheDir = optionString(this.entry, 'cacheDir');
+        if (cacheDir) env.LLAMA_CACHE = cacheDir;
+      }
       primaryPlan = {
         role: 'primary',
         spec: {
           command: resolved.command,
           args: this.launchArgs(),
           cwd: serverDir || (isAbsolute(resolved.command) ? dirname(resolved.command) : process.cwd()),
+          ...(Object.keys(env).length ? { env } : {}),
         },
       };
     }
@@ -514,27 +544,68 @@ export class Supervisor {
   }
 
   /**
-   * llama.cpp 条目:普通 embedding/rerank 模型只用条目 args。
-   * StartLux 模型补上 Instant 需要的单 slot 与整段 prompt 参数;操作者显式给的值优先。
+   * llama.cpp 条目：StartLux 固定单模型并补 Instant 参数；普通模型按 serve / router / single
+   * 三种方式补 host、port、模型目录与任务开关。操作者显式给的值优先。
    */
   private llamacppArgs(): string[] {
     const args = splitArgs(this.entry.args ?? '');
-    if (!isStartLuxEntry(this.entry)) return args;
-    // StartLux 的思考参数属于伴生进程，llama-server 不认识。
-    stripArg(args, '--think-mode');
-    stripArg(args, '--gate');
-
     const { host, port } = hostPort(this.entry);
-    // 条目 endpoint 是探活与路由的唯一地址；args 里的 host/port 不能和它打架。
+    if (isStartLuxEntry(this.entry)) {
+      // StartLux 的思考参数属于伴生进程，llama-server 不认识。
+      stripArg(args, '--think-mode');
+      stripArg(args, '--gate');
+      // 条目 endpoint 是探活与路由的唯一地址；args 里的 host/port 不能和它打架。
+      setArg(args, '--host', host);
+      setArg(args, '--port', String(port));
+      // Instant 的 prompt 必须整段、单 slot 评估;这两项不能让操作者用默认值覆盖。
+      setAnyArg(args, ['--parallel', '-np'], '1');
+      setArg(args, '--ctx-checkpoints', '0');
+      ensureAnyArg(args, ['-b', '--batch-size'], '16384');
+      ensureAnyArg(args, ['-ub', '--ubatch-size'], '16384');
+      ensureAnyArg(args, ['-c', '--ctx-size'], '20480');
+      return args;
+    }
+
+    const mode = llamacppLaunchMode(this.entry);
     setArg(args, '--host', host);
     setArg(args, '--port', String(port));
-    // Instant 的 prompt 必须整段、单 slot 评估;这两项不能让操作者用默认值覆盖。
-    setArg(args, '--parallel', '1');
-    setArg(args, '--ctx-checkpoints', '0');
-    ensureAnyArg(args, ['-b', '--batch-size'], '16384');
-    ensureAnyArg(args, ['-ub', '--ubatch-size'], '16384');
-    ensureAnyArg(args, ['-c', '--ctx-size'], '20480');
+
+    if (mode === 'serve') {
+      if (args[0] !== 'serve') args.unshift('serve');
+    } else if (args[0] === 'serve') {
+      // 从 serve 切到 router/single 时清掉残留子命令。
+      args.shift();
+    }
+
+    if (mode !== 'single') {
+      const modelsDir = optionString(this.entry, 'modelsDir');
+      if (modelsDir) setArg(args, '--models-dir', modelsDir);
+    }
+    const contextSize = optionNumber(this.entry, 'contextSize', -1);
+    if (contextSize >= 0) setAnyArg(args, ['-c', '--ctx-size'], String(contextSize));
+    const nGpuLayers = optionString(this.entry, 'nGpuLayers');
+    if (nGpuLayers) setAnyArg(args, ['-ngl', '--gpu-layers', '--n-gpu-layers'], nGpuLayers);
+    const parallel = optionNumber(this.entry, 'parallel', 0);
+    if (parallel > 0) setAnyArg(args, ['--parallel', '-np'], String(parallel));
+    this.addLlamacppTaskFlags(args, mode);
     return args;
+  }
+
+  /** 按 tasks 打开 llama.cpp 的 embeddings / rerank 端点；两种 CLI 的旗标不同。 */
+  private addLlamacppTaskFlags(args: string[], mode: LlamacppLaunchMode): void {
+    const tasks = tasksOfEntry(this.entry);
+    if (tasks.includes('embeddings')) {
+      const names = mode === 'serve'
+        ? ['--embedding', '--embeddings']
+        : ['--embeddings', '--embedding'];
+      if (!hasAnyArg(args, names)) args.push(names[0]!);
+    }
+    if (tasks.includes('rerank')) {
+      const names = mode === 'serve'
+        ? ['--rerank', '--reranking']
+        : ['--reranking', '--rerank'];
+      if (!hasAnyArg(args, names)) args.push(names[0]!);
+    }
   }
 
   /** 伴生 startlux-decide:把 typed systemone 请求翻译成 llama-server 的 prompt/readout。 */

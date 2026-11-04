@@ -13,7 +13,8 @@ const DEFAULT_PORTS: Partial<Record<ServiceType, number>> = {
 /** 本地预设端口;只在回环地址补齐,外部域名仍按 http/https 取 80/443。 */
 const LOOPBACK_PORTS: Partial<Record<ServiceType, number>> = {
   llamacpp: 8081,
-  systemone: 8090,
+  // 8090 是 Cortico 内置 llama.cpp 供应商的默认端口；StartLux 伴生避开它。
+  systemone: 8091,
 };
 const SCHEME_PORTS: Record<string, number> = { 'http:': 80, 'https:': 443 };
 
@@ -55,7 +56,7 @@ function hasScheme(value: string): boolean {
 
 /**
  * 归一化端点:无协议按 http;缺主机用 127.0.0.1;缺端口按类型补
- * (audiocpp 8080、sing/svc 9882;llamacpp/systemone 只在回环地址补 8081/8090,
+ * (audiocpp 8080、sing/svc 9882;llamacpp/systemone 只在回环地址补 8081/8091,
  * 外部域名按协议 80/443)。保留路径,去掉末尾斜杠。
  */
 export function endpointUrl(entry: EndpointLike): string {
@@ -111,9 +112,32 @@ export function isStartLuxEntry(entry: Pick<ServiceEntry, 'type' | 'tasks'>): bo
   return entry.type === 'llamacpp' && tasksOfEntry(entry).includes('systemone');
 }
 
+/** llama.cpp 的启动方式：llama.app 的 serve、ggml-org 的路由模式、或经典单模型。 */
+export type LlamacppLaunchMode = 'serve' | 'router' | 'single';
+
+/**
+ * 解析 llama.cpp 条目的启动方式。显式 `options.launchMode` 优先；旧配置按 args 推断：
+ * 带 `serve` 的是 llama.app，带 `--models-dir` 的是路由模式，带 `-m` / `--model` 的是单模型。
+ * 空配置默认 serve（llama.app 的现代 CLI）。StartLux 固定单模型。
+ */
+export function llamacppLaunchMode(
+  entry: Pick<ServiceEntry, 'type' | 'tasks' | 'args' | 'options'>,
+): LlamacppLaunchMode {
+  if (entry.type !== 'llamacpp' || isStartLuxEntry(entry)) return 'single';
+  const explicit = entry.options?.launchMode;
+  if (explicit === 'serve' || explicit === 'router' || explicit === 'single') return explicit;
+  const args = entry.args ?? '';
+  if (/(^|\s)serve(\s|$)/.test(args)) return 'serve';
+  if (/(^|\s)--models-dir(\s|=)/.test(args)) return 'router';
+  if (/(^|\s)(-m|--model)(\s|=)/.test(args)) return 'single';
+  const modelsDir = entry.options?.modelsDir;
+  if (typeof modelsDir === 'string' && modelsDir.trim()) return 'serve';
+  return 'serve';
+}
+
 /**
  * `systemone` 任务的上游地址。外部 systemone 条目用自己的 endpoint；
- * llama.cpp 托管的 StartLux 用伴生 startlux-decide，默认与本机 endpoint 同主机、8090 端口。
+ * llama.cpp 托管的 StartLux 用伴生 startlux-decide，默认与本机 endpoint 同主机、8091 端口。
  */
 export function systemoneEndpointOf(
   entry: Pick<ServiceEntry, 'type' | 'endpoint' | 'options'>,
@@ -126,7 +150,7 @@ export function systemoneEndpointOf(
   const primary = hostPort(entry);
   const rawPort = entry.options?.systemonePort;
   const port = typeof rawPort === 'number' && Number.isInteger(rawPort)
-    && rawPort >= 1 && rawPort <= 65535 ? rawPort : 8090;
+    && rawPort >= 1 && rawPort <= 65535 ? rawPort : 8091;
   const host = primary.host === '0.0.0.0' || primary.host === '::' ? '127.0.0.1' : primary.host;
   const address = host.includes(':') ? `[${host}]` : host;
   return `http://${address}:${port}`;
@@ -139,7 +163,7 @@ export function systemoneHostPort(
   const url = new URL(systemoneEndpointOf(entry));
   return {
     host: url.hostname.replace(/^\[|\]$/g, ''),
-    port: url.port ? Number(url.port) : 8090,
+    port: url.port ? Number(url.port) : 8091,
   };
 }
 

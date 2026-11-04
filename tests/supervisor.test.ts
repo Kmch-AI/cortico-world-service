@@ -178,6 +178,96 @@ describe('Supervisor', () => {
     await sup.stop();
   });
 
+  it('llamacpp serve 模式拉起 llama serve --models-dir,并开启任务端点', async () => {
+    const { sup, h } = make({
+      id: 'embed', name: 'embed', type: 'llamacpp',
+      endpoint: 'http://127.0.0.1:8081',
+      serverDir: 'C:/llama',
+      args: '',
+      tasks: ['embeddings', 'rerank'],
+      options: {
+        launchMode: 'serve', modelsDir: 'D:/models', cacheDir: 'D:/cache',
+        nGpuLayers: 'all', parallel: 4,
+      },
+    }, { healthFails: 1 });
+    await sup.start();
+    const launch = h.launches[0]!;
+    const exe = process.platform === 'win32' ? 'llama.exe' : 'llama';
+    expect(launch.command).toBe(join('C:/llama', exe));
+    expect(launch.args).toEqual([
+      'serve',
+      '--host', '127.0.0.1',
+      '--port', '8081',
+      '--models-dir', 'D:/models',
+      '-ngl', 'all',
+      '--parallel', '4',
+      '--embedding',
+      '--rerank',
+    ]);
+    expect(launch.env).toEqual({ LLAMA_CACHE: 'D:/cache' });
+    await sup.stop();
+  });
+
+  it('serve 模式缺 llama 时回退到同目录的 llama-server', async () => {
+    const h = harness({
+      id: 'embed', name: 'embed', type: 'llamacpp',
+      endpoint: 'http://127.0.0.1:8081',
+      serverDir: 'C:/llama',
+      args: '',
+      options: { launchMode: 'serve', modelsDir: 'D:/models' },
+    }, { healthFails: 1 });
+    h.deps.exists = (path) => /llama-server(\.exe)?$/.test(path);
+    const sup = new Supervisor({ entry: h.entry, dataDir: 'C:/data', log: quietLogger, deps: h.deps });
+    await sup.start();
+    expect(h.launches[0]!.command).toMatch(/llama-server(\.exe)?$/);
+    await sup.stop();
+  });
+
+  it('llamacpp router 模式用 llama-server --models-dir,不带 serve', async () => {
+    const { sup, h } = make({
+      id: 'embed', name: 'embed', type: 'llamacpp',
+      endpoint: 'http://127.0.0.1:8081',
+      serverDir: 'C:/llama',
+      args: '',
+      tasks: ['embeddings'],
+      options: { launchMode: 'router', modelsDir: 'D:/models' },
+    }, { healthFails: 1 });
+    await sup.start();
+    const launch = h.launches[0]!;
+    const exe = process.platform === 'win32' ? 'llama-server.exe' : 'llama-server';
+    expect(launch.command).toBe(join('C:/llama', exe));
+    expect(launch.args).toEqual([
+      '--host', '127.0.0.1',
+      '--port', '8081',
+      '--models-dir', 'D:/models',
+      '--embeddings',
+    ]);
+    await sup.stop();
+  });
+
+  it('llamacpp single 模式保留 -m,并补 host/port 与任务端点', async () => {
+    const { sup, h } = make({
+      id: 'embed', name: 'embed', type: 'llamacpp',
+      endpoint: 'http://127.0.0.1:8081',
+      serverDir: 'C:/llama',
+      args: '-m D:/models/a.gguf -ngl 99',
+      tasks: ['embeddings'],
+      options: { launchMode: 'single' },
+    }, { healthFails: 1 });
+    await sup.start();
+    const launch = h.launches[0]!;
+    const exe = process.platform === 'win32' ? 'llama-server.exe' : 'llama-server';
+    expect(launch.command).toBe(join('C:/llama', exe));
+    expect(launch.args).toEqual([
+      '-m', 'D:/models/a.gguf',
+      '-ngl', '99',
+      '--host', '127.0.0.1',
+      '--port', '8081',
+      '--embeddings',
+    ]);
+    await sup.stop();
+  });
+
   it('两端都已在线时接管,不重复拉起', async () => {
     const h = startluxHarness({ primary: true, companion: true });
     const sup = startluxSupervisor(h);

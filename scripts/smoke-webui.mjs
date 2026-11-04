@@ -451,7 +451,7 @@ const draftEditor = one('.svc-editor', servicesRoot);
 assert.deepEqual(sectionTitles(draftEditor), ['服务地址', '运行时', '模型', '高级']);
 const draftName = fieldControl(draftEditor, '名称');
 const draftType = fieldControl(draftEditor, '类型');
-const draftEndpoint = fieldControl(draftEditor, '地址');
+const draftEndpoint = fieldControl(draftEditor, 'API 地址');
 assert.equal(draftName.value, '未命名服务');
 assert.equal(draftType.value, 'audiocpp');
 assert.equal(draftEndpoint.value, 'http://127.0.0.1:8080', 'audiocpp default endpoint 8080');
@@ -478,15 +478,16 @@ draftType.value = 'openai';
 fire(draftType, 'change');
 const manage = checkControl(draftEditor, '托管进程');
 assert.equal(manage.checked, false, 'openai turns process hosting off');
-assert.deepEqual(all('.svc-process', draftEditor).map(item => item.hidden), [true, true, true, true], 'unmanaged hides process fields');
+assert.deepEqual(all('.svc-process', draftEditor).map(item => item.hidden), [true, true, true, true, true], 'unmanaged hides process fields');
 
 manage.checked = true;
 fire(manage, 'change');
-assert.deepEqual(all('.svc-process', draftEditor).map(item => item.hidden), [false, true, true, true], 'openai shows process fields only');
+assert.deepEqual(all('.svc-process', draftEditor).map(item => item.hidden), [false, true, true, true, true], 'openai shows process fields only');
 
 draftType.value = 'llamacpp';
 fire(draftType, 'change');
-assert.deepEqual(all('.svc-process', draftEditor).map(item => item.hidden), [false, true, false, true], 'llamacpp shows tuning, hides audiocpp extras');
+assert.deepEqual(all('.svc-process', draftEditor).map(item => item.hidden), [false, false, true, true, true], 'llamacpp shows process and llama launch fields only');
+assert.equal(fieldControl(draftEditor, '启动方式').value, 'serve', 'new llamacpp draft defaults to serve');
 const profileField = all('.connection-field', draftEditor).find(item => text(item.querySelector('.fieldlabel')).startsWith('模型 profile'));
 assert.ok(profileField?.hidden, 'llamacpp hides the model profile');
 
@@ -559,7 +560,7 @@ one('.connection-create > .btn', servicesRoot).click();
 await settle();
 const sysEditor = one('.svc-editor', servicesRoot);
 const sysType = fieldControl(sysEditor, '类型');
-const sysEndpoint = fieldControl(sysEditor, '地址');
+const sysEndpoint = fieldControl(sysEditor, 'API 地址');
 sysType.value = 'llamacpp';
 fire(sysType, 'change');
 assert.equal(sysEndpoint.value, 'http://127.0.0.1:8081', 'llamacpp default endpoint 8081');
@@ -569,14 +570,14 @@ const sysTasks = fieldControl(sysEditor, '模型任务');
 assert.deepEqual([...sysTasks.options].map(item => item.value), ['embeddings,rerank', 'embeddings', 'rerank', 'systemone'], 'model task choices');
 const sysGroup = all('.svc-process', sysEditor).find(item => text(item).includes('StartLux 本地预设'));
 assert.ok(sysGroup?.hidden, 'StartLux preset hidden for embeddings/rerank');
-assert.deepEqual(all('.svc-process', sysEditor).map(item => item.hidden), [false, true, false, true], 'llamacpp embeddings shows process and tuning');
+assert.deepEqual(all('.svc-process', sysEditor).map(item => item.hidden), [false, false, true, true, true], 'llamacpp embeddings shows process and llama launch fields');
 
 sysTasks.value = 'systemone';
 fire(sysTasks, 'change');
 assert.equal(sysGroup.hidden, false, 'systemone task shows the StartLux preset');
-assert.deepEqual(all('.svc-process', sysEditor).map(item => item.hidden), [false, false, true, true], 'StartLux shows process and preset only');
+assert.deepEqual(all('.svc-process', sysEditor).map(item => item.hidden), [false, true, false, true, true], 'StartLux shows process and preset only');
 
-const sysModelDir = fieldControl(sysEditor, '模型目录');
+const sysModelDir = fieldControl(sysEditor, 'StartLux 模型目录');
 const sysStartluxDir = fieldControl(sysEditor, 'StartLux 目录');
 const sysSystemonePort = fieldControl(sysEditor, 'SystemOne 端口');
 const sysThinkMode = fieldControl(sysEditor, '思考模式');
@@ -633,6 +634,62 @@ assert.deepEqual(sysAdd.args[0].options, {
   instant: true,
 });
 console.log(`StartLux model/task smoke ok: options=${JSON.stringify(sysAdd.args[0].options)}`);
+
+// ---------------------------------------------------------------------------
+// llamacpp serve 模式：GGUF 目录、缓存与启动参数写回 options；重开保持任务标签。
+// ---------------------------------------------------------------------------
+
+one('.connection-create > .btn', servicesRoot).click();
+await settle();
+const serveEditor = one('.svc-editor', servicesRoot);
+const serveType = fieldControl(serveEditor, '类型');
+serveType.value = 'llamacpp';
+fire(serveType, 'change');
+const serveTasks = fieldControl(serveEditor, '模型任务');
+serveTasks.value = 'embeddings,rerank';
+fire(serveTasks, 'change');
+assert.equal(fieldControl(serveEditor, '启动方式').value, 'serve', 'new llamacpp draft defaults to serve');
+const serveName = fieldControl(serveEditor, '名称');
+serveName.value = 'Embed';
+fire(serveName, 'input');
+const serveModelsDir = fieldControl(serveEditor, 'GGUF 目录');
+serveModelsDir.value = 'D:/models';
+fire(serveModelsDir, 'input');
+const serveCacheDir = fieldControl(serveEditor, '缓存目录');
+serveCacheDir.value = 'D:/cache';
+fire(serveCacheDir, 'input');
+const serveContext = fieldControl(serveEditor, '上下文长度');
+serveContext.value = '16384';
+fire(serveContext, 'input');
+const serveNgl = fieldControl(serveEditor, 'GPU 层数');
+serveNgl.value = 'all';
+fire(serveNgl, 'input');
+const serveParallel = fieldControl(serveEditor, '并行槽位');
+serveParallel.value = '4';
+fire(serveParallel, 'input');
+one('.svc-editor .actions .btn.primary', servicesRoot).click();
+await settle();
+const serveAdd = calls.findLast(item => item.method === 'add');
+assert.ok(serveAdd, 'serve draft saves');
+assert.equal(serveAdd.args[0].type, 'llamacpp');
+assert.deepEqual(serveAdd.args[0].tasks, ['embeddings', 'rerank'], 'serve tasks save');
+assert.deepEqual(serveAdd.args[0].options, {
+  launchMode: 'serve',
+  modelsDir: 'D:/models',
+  cacheDir: 'D:/cache',
+  contextSize: 16384,
+  nGpuLayers: 'all',
+  parallel: 4,
+}, 'serve launch options save');
+
+const savedEditor = one('.svc-editor', servicesRoot);
+const savedTasks = fieldControl(savedEditor, '模型任务');
+assert.equal(savedTasks.value, 'embeddings,rerank', 'saved tasks normalize to the preset value');
+assert.equal(text(savedTasks.selectedOptions[0]), 'Embeddings + Rerank', 'saved tasks keep the preset label');
+const savedLabels = all('.connection-field .fieldlabel', savedEditor).map(text);
+assert.ok(savedLabels.includes('API Key'), 'upstream token field is labeled API Key');
+assert.ok(!savedLabels.includes('上游令牌变量名'), 'old upstream token label is gone');
+console.log(`llamacpp serve smoke ok: options=${JSON.stringify(serveAdd.args[0].options)}`);
 
 // ---------------------------------------------------------------------------
 // 网关面板:三块编号折叠区。

@@ -802,6 +802,17 @@ export class ServiceWorld implements World {
     });
   }
 
+  /**
+   * 路由模式要求请求带 model。条目配置了 models 就用第一个；否则取目录里该任务的第一个。
+   * 单模型服务会忽略这个字段，注入它没有副作用。
+   */
+  private defaultModelFor(entry: ServiceEntry, task: 'embeddings' | 'rerank'): string | undefined {
+    const configured = (entry.models ?? []).map((model) => model.trim()).find(Boolean);
+    if (configured) return configured;
+    const models = this.catalog.models([entry]);
+    return models.find((model) => model.tasks.includes(task))?.id ?? models[0]?.id;
+  }
+
   /** 在启用条目里按模型任务和 model 选一个;没有 model 时按配置顺序取第一个。 */
   private selectJsonEntry(
     task: 'systemone' | 'embeddings' | 'rerank',
@@ -908,8 +919,14 @@ export class ServiceWorld implements World {
     if (!adapter.embeddings) {
       throw ServiceError.unsupported(`service ${entry.id} does not support embeddings`);
     }
+    const body = { ...request.body };
+    const requested = typeof body.model === 'string' ? body.model.trim() : '';
+    if (!request.model && !requested) {
+      const model = this.defaultModelFor(entry, 'embeddings');
+      if (model) body.model = model;
+    }
     const call = adapter.embeddings;
-    return this.jsonCall('embeddings', entry, () => call(this.jsonRequest(entry, request.body, signal)));
+    return this.jsonCall('embeddings', entry, () => call(this.jsonRequest(entry, body, signal)));
   }
 
   private async rerank(request: RerankRequest, signal: AbortSignal): Promise<JsonResult> {
@@ -922,8 +939,14 @@ export class ServiceWorld implements World {
     if (!adapter.rerank) {
       throw ServiceError.unsupported(`service ${entry.id} does not support rerank`);
     }
+    const body = { ...request.body };
+    const requested = typeof body.model === 'string' ? body.model.trim() : '';
+    if (!request.model && !requested) {
+      const model = this.defaultModelFor(entry, 'rerank');
+      if (model) body.model = model;
+    }
     const call = adapter.rerank;
-    return this.jsonCall('rerank', entry, () => call(this.jsonRequest(entry, request.body, signal)));
+    return this.jsonCall('rerank', entry, () => call(this.jsonRequest(entry, body, signal)));
   }
 
   private async refreshCatalogs(): Promise<void> {

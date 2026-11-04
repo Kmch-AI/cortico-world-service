@@ -1,3 +1,16 @@
+## 0.8.0
+
+- llama.cpp 增加三种启动方式：`serve`（llama.app 的 `llama serve`）、`router`（ggml-org / Cortico 内置的 `llama-server --models-dir`）与 `single`（`-m` 单模型）。`options.launchMode` 显式选择；旧配置按 `args` 推断，空配置默认 `serve`。
+- `serve` 模式默认可执行文件改为 `llama(.exe)`，参数 `serve --host --port --models-dir`，任务按 `--embedding` / `--rerank` 开端点；`router` 保持 `llama-server`，任务按 `--embeddings` / `--reranking`。
+- 新增 `options.modelsDir`、`cacheDir`、`contextSize`、`nGpuLayers`、`parallel`；`cacheDir` 设为 `LLAMA_CACHE`，其余分别映射 `--models-dir`、`-c`、`-ngl`、`--parallel`。非 StartLux 条目现在也会补 `--host` / `--port`，不再依赖操作者在 `args` 里重复。
+- `/v1/embeddings` 与 `/v1/rerank` 在请求缺 `model` 时补条目的第一个模型（`models` 或目录里的第一个），适配路由模式必须带模型名的要求。
+- 修复「模型任务」选 `Embeddings + Rerank` 后回显成 `embeddings, rerank`：任务列表统一用无空格逗号匹配预设。
+- 服务地址的上游令牌字段改名为 `API Key`，与内置供应商一致；仍只存部署 `.env` 变量名。
+- 服务面板的 llama.cpp 运行时改为启动方式、GGUF 目录、缓存目录、上下文长度、GPU 层数、并行槽位；audiocpp 才显示后端、设备、线程与空闲卸载。
+- StartLux 伴生 `systemonePort` 默认从 8090 改为 8091，避开 Cortico 内置 llama.cpp 供应商的 8090。
+- 服务包 11 个文件 183 个测试全绿；typecheck、build:webui、smoke:webui 通过。
+- 版本按新增启动方式与配置项升 minor。
+
 ## 0.7.0
 
 - 模型/任务层级修正：一个条目就是一个模型部署，`tasks` 决定路由；`systemone` 与 `embeddings` / `rerank` 同级。StartLux 不再是独立 systemone 服务，而是 `llamacpp` 条目下的模型（`tasks: ['systemone']`）。

@@ -36,7 +36,7 @@ export interface ServiceEntry {
   binary?: string;
   /** 追加到命令行的参数,按空白分隔(支持引号)。 */
   args?: string;
-  /** 上游 Bearer token 的 .env 变量名。 */
+  /** 上游 API Key 的 .env 变量名。 */
   secretName?: string;
   /** 'auto' 或内置 profile id。 */
   modelProfile?: string;

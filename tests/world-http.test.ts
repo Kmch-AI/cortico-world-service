@@ -441,6 +441,22 @@ describe('service World JSON routes', () => {
     await world.stop();
   });
 
+  it('路由模式缺 model 时补条目 models 的第一个', async () => {
+    const upstream = await ttsUpstream();
+    const world = build([{ ...llamacppEntry(upstream.url), models: ['embed-default'] }]);
+    await world.start(new FakeHost());
+    const base = `http://127.0.0.1:${world.gatewayStatus().port}`;
+    const res = await fetch(`${base}/v1/embeddings`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ input: 'hi' }),
+    });
+    expect(res.status).toBe(200);
+    const call = upstream.requests.find((item) => item.url === '/v1/embeddings')!;
+    expect(JSON.parse(call.body)).toEqual({ input: 'hi', model: 'embed-default' });
+    await world.stop();
+  });
+
   it('没有对应条目时三个路由都回 503', async () => {
     const world = build([]);
     await world.start(new FakeHost());
