@@ -6,7 +6,10 @@
 import { serviceIdFor } from './entry.ts';
 import { ServiceError } from './errors.ts';
 import { ENV_NAME_RE } from './secrets.ts';
-import { SERVICE_TYPES } from './panel.ts';
+import {
+  CONFIG_BUNDLE_FORMAT, CONFIG_BUNDLE_VERSION, SERVICE_ID_RE, SERVICE_TYPES,
+  type PanelConfigGateway,
+} from './panel.ts';
 import type { ServiceConfigSection, ServiceEntry, ServiceType } from './types.ts';
 
 const MAX_NAME = 120;
@@ -17,6 +20,8 @@ const MAX_TOKEN_NAME = 128;
 const MAX_MODEL = 200;
 const MAX_MODELS = 200;
 const MAX_OPTIONS_BYTES = 64 * 1024;
+const MAX_CONFIG_BYTES = 1024 * 1024;
+const MAX_CONFIG_SERVICES = 100;
 /** 已知模型任务；拼错时不静默变成无人接的条目。 */
 const SERVICE_TASKS = new Set(['tts', 'sing', 'systemone', 'embeddings', 'rerank', 'chat']);
 
@@ -310,4 +315,97 @@ export function normalizeGatewayPatch(input: unknown): GatewayPatch {
     patch.defaultSpeechModel = gatewayText(input.defaultSpeechModel, 'defaultSpeechModel', MAX_MODEL);
   }
   return patch;
+}
+
+const CONFIG_BUNDLE_KEYS = new Set(['format', 'version', 'packageVersion', 'gateway', 'services']);
+const GATEWAY_BUNDLE_KEYS: ReadonlyArray<keyof PanelConfigGateway> = [
+  'enabled', 'host', 'port', 'tokenSecret', 'allowQueryToken', 'requestTimeoutSec', 'defaultSpeechModel',
+];
+const SERVICE_ENTRY_KEYS = new Set([
+  'id', 'name', 'type', 'enabled', 'endpoint', 'manage', 'autoStart', 'restartOnExit',
+  'serverDir', 'binary', 'args', 'secretName', 'modelProfile', 'models', 'tasks', 'options',
+]);
+
+export interface NormalizedConfigBundle {
+  gateway: PanelConfigGateway;
+  services: ServiceEntry[];
+}
+
+/**
+ * 导入文件的整份校验。与面板的增量写入不同,这里要求完整快照:
+ * 网关七个标量必须齐全,服务条目必须带稳定 id,未知字段直接拒绝。
+ * 令牌只有变量名,值仍从部署 .env 读取。
+ */
+export function normalizeConfigBundle(input: unknown): NormalizedConfigBundle {
+  if (!isPlainObject(input)) throw invalid('config bundle must be a JSON object', 'config');
+  let size: number;
+  try {
+    size = Buffer.byteLength(JSON.stringify(input), 'utf8');
+  } catch {
+    throw invalid('config bundle must be JSON-serializable', 'config');
+  }
+  if (size > MAX_CONFIG_BYTES) {
+    throw invalid(`config bundle must be at most ${MAX_CONFIG_BYTES} bytes`, 'config');
+  }
+  for (const key of Object.keys(input)) {
+    if (!CONFIG_BUNDLE_KEYS.has(key)) throw invalid(`unknown config field: ${key}`, key);
+  }
+  if (input.format !== CONFIG_BUNDLE_FORMAT) {
+    throw invalid(`format must be ${CONFIG_BUNDLE_FORMAT}`, 'format');
+  }
+  if (input.version !== CONFIG_BUNDLE_VERSION) {
+    throw invalid(`unsupported config version: ${String(input.version)}`, 'version');
+  }
+  if (input.packageVersion !== undefined) {
+    if (typeof input.packageVersion !== 'string') {
+      throw invalid('packageVersion must be a string', 'packageVersion');
+    }
+    if ([...input.packageVersion].length > 64) {
+      throw invalid('packageVersion must be at most 64 characters', 'packageVersion');
+    }
+    noControl(input.packageVersion, 'packageVersion');
+  }
+  if (!isPlainObject(input.gateway)) throw invalid('gateway must be a JSON object', 'gateway');
+  for (const key of GATEWAY_BUNDLE_KEYS) {
+    if (!(key in input.gateway)) {
+      throw invalid(`gateway.${key} is required`, `gateway.${key}`);
+    }
+  }
+  const patch = normalizeGatewayPatch(input.gateway);
+  const gateway: PanelConfigGateway = {
+    enabled: patch.enabled!,
+    host: patch.host!,
+    port: patch.port!,
+    tokenSecret: patch.tokenSecret!,
+    allowQueryToken: patch.allowQueryToken!,
+    requestTimeoutSec: patch.requestTimeoutSec!,
+    defaultSpeechModel: patch.defaultSpeechModel!,
+  };
+  if (!Array.isArray(input.services)) throw invalid('services must be an array', 'services');
+  if (input.services.length > MAX_CONFIG_SERVICES) {
+    throw invalid(`services must have at most ${MAX_CONFIG_SERVICES} entries`, 'services');
+  }
+  const importedIds = new Set<string>();
+  const services: ServiceEntry[] = input.services.map((raw, index) => {
+    const field = `services[${index}]`;
+    if (!isPlainObject(raw)) throw invalid(`${field} must be a JSON object`, field);
+    for (const key of Object.keys(raw)) {
+      if (!SERVICE_ENTRY_KEYS.has(key)) throw invalid(`${field} has unknown field: ${key}`, key);
+    }
+    const id = raw.id;
+    if (typeof id !== 'string' || !SERVICE_ID_RE.test(id)) {
+      throw invalid(`${field}.id must be a valid service id`, 'id');
+    }
+    // 日志文件名直接用 id;Windows 文件系统不区分大小写,同字母不同大小写会撞日志。
+    const idKey = id.toLowerCase();
+    if (importedIds.has(idKey)) throw invalid(`${field}.id duplicates another id`, 'id');
+    importedIds.add(idKey);
+    if (typeof raw.type !== 'string') throw invalid(`${field}.type is required`, 'type');
+    // normalizeEntry 会重新生成 id;导入必须保留文件里的稳定 id。
+    const entry = normalizeEntry(raw);
+    entry.id = id;
+    return entry;
+  });
+  validateServices(services);
+  return { gateway, services };
 }

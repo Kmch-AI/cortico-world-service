@@ -1,3 +1,12 @@
+## 0.10.0
+
+- 服务面板新增「导出配置 / 导入配置」：导出网关七个标量与全部服务条目为一个带 `format` / `version` 的 JSON 文件；导入整份替换当前配置，保留服务 id 与顺序，并停掉被删除或停用的条目。
+- 导入文件只含令牌变量名（`secretName` / `tokenSecret`），不含令牌值；值仍从部署 `.env` 读取。导入不写 `.env`，也不自动启动新条目；网关启用状态、host / port / 令牌变量变化后重启 World 生效。
+- 导入校验：格式与版本、网关七个字段齐全、服务 id 合法且唯一、条目字段白名单、单条 options 上限、整包 1 MiB / 100 个服务；坏文件整份拒绝，不部分写入。
+- 导出在浏览器用 Blob 下载；宿主没有 `URL.createObjectURL` 时退回抽屉展示 JSON。导入用隐藏的 file input，确认后提交。
+- 服务包 11 个文件 189 个测试全绿；typecheck、build:webui、smoke:webui 通过。
+- 版本按新增功能升 minor。
+
 ## 0.9.0
 
 - 服务类型表去掉 `svc` / `custom`，新增 `startlux`（StartLux Decision）。类型显示名改为 `audiocpp` / `Sing` / `OpenAI` / `llama.cpp` / `StartLux Decision` / `SystemOne`，下拉顺序按用途分组。

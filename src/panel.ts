@@ -9,6 +9,30 @@ export const SERVICE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 /** 服务类型;协议由 `protocolOf` 推导,不再单独配置。顺序按页面用途分组。 */
 export const SERVICE_TYPES = ['audiocpp', 'sing', 'openai', 'llamacpp', 'startlux', 'systemone'] as const;
 
+/** 导入导出文件的格式标记与版本;格式变更时升版本并拒绝旧文件。 */
+export const CONFIG_BUNDLE_FORMAT = 'cortico-world-service';
+export const CONFIG_BUNDLE_VERSION = 1;
+
+/** 导出文件里的网关标量;字段与 `worlds.service` 同名。 */
+export interface PanelConfigGateway {
+  enabled: boolean;
+  host: string;
+  port: number;
+  tokenSecret: string;
+  allowQueryToken: boolean;
+  requestTimeoutSec: number;
+  defaultSpeechModel: string;
+}
+
+/** 导出/导入的全部配置。令牌只带变量名,不带值。 */
+export interface PanelConfigBundle {
+  format: typeof CONFIG_BUNDLE_FORMAT;
+  version: typeof CONFIG_BUNDLE_VERSION;
+  packageVersion: string;
+  gateway: PanelConfigGateway;
+  services: ServiceEntry[];
+}
+
 /** 类型的显示名;配置里仍用 {@link SERVICE_TYPES} 的小写键。 */
 export const SERVICE_TYPE_LABELS: Readonly<Record<ServiceType, string>> = {
   audiocpp: 'audiocpp',

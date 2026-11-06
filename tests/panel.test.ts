@@ -2,10 +2,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { SERVICE_DEFAULTS } from '../src/config.ts';
+import { SERVICE_DEFAULTS, SERVICE_VERSION } from '../src/config.ts';
 import { SERVICE_TYPES, SERVICE_TYPE_LABELS } from '../src/panel.ts';
 import type {
-  PanelLogs, PanelModels, PanelServiceEntry, PanelState, PanelTokenResult,
+  PanelConfigBundle, PanelLogs, PanelModels, PanelServiceEntry, PanelState, PanelTokenResult,
 } from '../src/panel.ts';
 import type { ServiceConfigSection, ServiceEntry } from '../src/types.ts';
 import { ServiceWorld, type ServiceWorldOptions } from '../src/world.ts';
@@ -130,6 +130,219 @@ describe('services 面板', () => {
     const json = JSON.stringify(state);
     expect(json).not.toContain('gw-secret-value');
     expect(json).not.toContain('up-secret-value');
+  });
+
+  it('exportConfig 导出全部配置,不带令牌值、运行态或旧字段', async () => {
+    const legacy = {
+      ...entry({ secretName: 'UPSTREAM_TOKEN' }),
+      legacyField: 'drop-me',
+    } as ServiceEntry;
+    const { world, secrets } = make(
+      {
+        tokenSecret: 'GATEWAY_TOKEN',
+        services: [legacy],
+      },
+      { secrets: { GATEWAY_TOKEN: 'gateway-export-value', UPSTREAM_TOKEN: 'up-export-value' } },
+    );
+    const ui = world.webUi('zh');
+    const bundle = await ui.invoke!('services', 'exportConfig', []) as PanelConfigBundle;
+
+    expect(bundle).toMatchObject({
+      format: 'cortico-world-service',
+      version: 1,
+      packageVersion: SERVICE_VERSION,
+      gateway: {
+        enabled: true,
+        host: '127.0.0.1',
+        port: 9883,
+        tokenSecret: 'GATEWAY_TOKEN',
+        allowQueryToken: false,
+        requestTimeoutSec: 180,
+        defaultSpeechModel: '',
+      },
+    });
+    expect(bundle.services.map((item) => item.id)).toEqual(['alpha']);
+    expect(bundle.services[0]).toMatchObject({
+      id: 'alpha',
+      name: 'Alpha',
+      secretName: 'UPSTREAM_TOKEN',
+      endpoint: 'http://127.0.0.1:9101',
+    });
+    const json = JSON.stringify(bundle);
+    expect(json).not.toContain(secrets.GATEWAY_TOKEN);
+    expect(json).not.toContain(secrets.UPSTREAM_TOKEN);
+    expect(json).not.toContain('tokenSet');
+    expect(bundle.services[0]).not.toHaveProperty('legacyField');
+    expect(bundle.services[0]).not.toHaveProperty('phase');
+    expect(bundle.services[0]).not.toHaveProperty('pid');
+  });
+
+  it('importConfig 整份替换网关与服务,保留文件里的 id 与顺序', async () => {
+    const { world, cfg, saved } = make({ services: [entry()] });
+    const ui = world.webUi('zh');
+    const bundle: PanelConfigBundle = {
+      format: 'cortico-world-service',
+      version: 1,
+      packageVersion: SERVICE_VERSION,
+      gateway: {
+        enabled: false,
+        host: '0.0.0.0',
+        port: 9900,
+        tokenSecret: 'NEW_TOKEN',
+        allowQueryToken: true,
+        requestTimeoutSec: 30,
+        defaultSpeechModel: 'voice-a',
+      },
+      services: [
+        entry({ id: 'llama-1', name: 'Llama Main', endpoint: 'http://127.0.0.1:9102' }),
+        entry({ id: 'gamma', name: 'Gamma', endpoint: 'http://127.0.0.1:9103' }),
+      ],
+    };
+
+    const state = await ui.invoke!('services', 'importConfig', [bundle]) as PanelState;
+
+    expect(cfg.services.map((item) => item.id)).toEqual(['llama-1', 'gamma']);
+    expect(state.services.map((item) => item.entry.id)).toEqual(['llama-1', 'gamma']);
+    expect(state.gateway).toMatchObject({
+      enabled: false,
+      host: '0.0.0.0',
+      port: 9900,
+      secretName: 'NEW_TOKEN',
+      allowQueryToken: true,
+      requestTimeoutSec: 30,
+      defaultSpeechModel: 'voice-a',
+    });
+    expect(saved.at(-1)?.services?.map((item) => item.id)).toEqual(['llama-1', 'gamma']);
+    expect(saved.at(-1)).toMatchObject({
+      enabled: false,
+      host: '0.0.0.0',
+      port: 9900,
+      tokenSecret: 'NEW_TOKEN',
+      allowQueryToken: true,
+      requestTimeoutSec: 30,
+      defaultSpeechModel: 'voice-a',
+    });
+  });
+
+  it('exportConfig 与 importConfig 往返不丢字段', async () => {
+    const a = make({
+      tokenSecret: 'GW_TOKEN',
+      services: [
+        entry({
+          id: 'llama-1',
+          name: 'Llama Main',
+          type: 'llamacpp',
+          endpoint: 'http://127.0.0.1:8082',
+          serverDir: 'C:/llama',
+          binary: 'llama-server.exe',
+          args: '--ctx-checkpoints 0 -b 16384 -ub 16384',
+          models: ['StartLux Decision Q8_0'],
+          tasks: ['chat'],
+          options: {
+            launchMode: 'single',
+            modelsDir: 'D:/models',
+            contextSize: 20480,
+            parallel: 1,
+          },
+        }),
+        entry({
+          id: 'startlux-1',
+          name: 'StartLux Decision',
+          type: 'startlux',
+          endpoint: 'http://127.0.0.1:8091',
+          serverDir: 'D:/AI/StartLux-Decision',
+          binary: 'C:/StartLux-Decision/.venv/Scripts/startlux-decide.exe',
+          args: '--verbose',
+          options: {
+            modelDir: 'D:/models/StartLux-Decision',
+            llamacppService: 'llama-1',
+            instant: true,
+          },
+        }),
+      ],
+    });
+    const uiA = a.world.webUi('zh');
+    const bundleA = await uiA.invoke!('services', 'exportConfig', []) as PanelConfigBundle;
+
+    const b = make();
+    await b.world.webUi('zh').invoke!('services', 'importConfig', [bundleA]);
+    const bundleB = await b.world.webUi('zh').invoke!('services', 'exportConfig', []) as PanelConfigBundle;
+
+    expect(bundleB).toEqual(bundleA);
+  });
+
+  it('importConfig 只带令牌变量名,不改部署 .env', async () => {
+    const { world, secrets } = make(
+      {},
+      { secrets: { NEW_TOKEN: 'new-gateway-value', UPSTREAM_TOKEN: 'new-upstream-value' } },
+    );
+    const before = { ...secrets };
+    const ui = world.webUi('zh');
+    const bundle: PanelConfigBundle = {
+      format: 'cortico-world-service',
+      version: 1,
+      packageVersion: SERVICE_VERSION,
+      gateway: {
+        enabled: true,
+        host: '127.0.0.1',
+        port: 9883,
+        tokenSecret: 'NEW_TOKEN',
+        allowQueryToken: false,
+        requestTimeoutSec: 180,
+        defaultSpeechModel: '',
+      },
+      services: [entry({ id: 'beta', name: 'Beta', secretName: 'UPSTREAM_TOKEN' })],
+    };
+
+    const state = await ui.invoke!('services', 'importConfig', [bundle]) as PanelState;
+
+    expect(secrets).toEqual(before);
+    expect(state.gateway.tokenSet).toBe(true);
+    expect(state.services[0]?.entry.tokenSet).toBe(true);
+    expect(JSON.stringify(state)).not.toContain(secrets.NEW_TOKEN);
+    expect(JSON.stringify(state)).not.toContain(secrets.UPSTREAM_TOKEN);
+  });
+
+  it('importConfig 拒绝坏格式、未知字段、坏 id 与重复 id,且不写回', async () => {
+    const { world, cfg, saved } = make({ services: [entry()] });
+    const ui = world.webUi('zh');
+    const good: PanelConfigBundle = {
+      format: 'cortico-world-service',
+      version: 1,
+      packageVersion: SERVICE_VERSION,
+      gateway: {
+        enabled: true,
+        host: '127.0.0.1',
+        port: 9883,
+        tokenSecret: '',
+        allowQueryToken: false,
+        requestTimeoutSec: 180,
+        defaultSpeechModel: '',
+      },
+      services: [entry({ id: 'beta', name: 'Beta' })],
+    };
+    const { defaultSpeechModel: _dropped, ...partialGateway } = good.gateway;
+    const cases: unknown[] = [
+      null,
+      [],
+      { ...good, format: 'other' },
+      { ...good, version: 2 },
+      { ...good, extra: true },
+      { ...good, gateway: partialGateway },
+      { ...good, gateway: { ...good.gateway, port: 0 } },
+      { ...good, gateway: { ...good.gateway, nope: 1 } },
+      { ...good, services: [{ ...good.services[0], id: 'bad/id' }] },
+      { ...good, services: [{ ...good.services[0], tokenSet: true }] },
+      { ...good, services: [{ ...good.services[0], type: 'nope' }] },
+      { ...good, services: [{ ...good.services[0], endpoint: '' }] },
+      { ...good, services: [good.services[0], { ...good.services[0] }] },
+      { ...good, services: [{ ...good.services[0], id: 'Beta' }, { ...good.services[0], id: 'beta' }] },
+    ];
+    for (const bundle of cases) {
+      await expect(ui.invoke!('services', 'importConfig', [bundle])).rejects.toThrow();
+    }
+    expect(saved).toEqual([]);
+    expect(cfg.services.map((item) => item.id)).toEqual(['alpha']);
   });
 
   it('面板状态里没有 protocol 与 healthPath：协议与健康路径都由类型推导', async () => {

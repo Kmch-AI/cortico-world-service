@@ -2,7 +2,7 @@
 
 Kmch AI · 服务：本机推理服务的进程托管与统一网关。托管 audiocpp、llama.cpp 与 StartLux Decision，提供语音合成、唱歌、嵌入、重排与 SystemOne 接口；模型、权重与运行环境由你准备。
 
-0.9.0 有通用进程托管与多条目编排，也有统一网关：`/health`、`/v1/models`、`/v1/audio/voices`、`/v1/audio/speech`、`/v1/audio/sing`、`/v1/systemone`、`/v1/embeddings`、`/v1/rerank` 都接在同一组服务条目上。一个条目就是一个模型部署；`tasks` 决定 llama.cpp 条目接 `embeddings` / `rerank`。llama.cpp 只有两种启动方式：多模型扫描一个 GGUF 目录，单模型从目录里选一个文件。StartLux Decision 是独立服务类型：它启动 `startlux-decide`，把 typed systemone 请求代理到一条 llama.cpp 条目的 GGUF 上；条目地址就是 `/v1/systemone` 端口。外部 SystemOne 服务仍用 `type: systemone`。audiocpp 的默认端口是 8080。
+0.10.0 增加配置导入导出：服务面板可把网关标量与全部服务条目导出成一个 JSON，也可整份导入；令牌只带变量名，值仍在部署 `.env`。0.9.0 的通用进程托管与多条目编排、统一网关继续适用：`/health`、`/v1/models`、`/v1/audio/voices`、`/v1/audio/speech`、`/v1/audio/sing`、`/v1/systemone`、`/v1/embeddings`、`/v1/rerank` 都接在同一组服务条目上。一个条目就是一个模型部署；`tasks` 决定 llama.cpp 条目接 `embeddings` / `rerank`。llama.cpp 只有两种启动方式：多模型扫描一个 GGUF 目录，单模型从目录里选一个文件。StartLux Decision 是独立服务类型：它启动 `startlux-decide`，把 typed systemone 请求代理到一条 llama.cpp 条目的 GGUF 上；条目地址就是 `/v1/systemone` 端口。外部 SystemOne 服务仍用 `type: systemone`。audiocpp 的默认端口是 8080。
 
 ## 为什么是 World，不是 provider
 
@@ -302,6 +302,7 @@ World 页用 Cortico 自己的页面页签分成两块面板，不再声明配�
   - 高级：其余 Options JSON，默认折叠。
 - 新增服务先作为草稿卡片出现，默认名称 `未命名服务`、类型 `audiocpp`、地址 `http://127.0.0.1:8080`、不启用、托管进程、不随 World 启动、退出不重启。名称、类型与模型药丸随输入即时更新；删除草稿不需要确认，保存时才调用 `add` 并选中新条目。
 - 切换类型只在地址为空或等于旧类型默认地址时替换默认端点；`openai` 默认关闭进程托管，`sing` 默认 `http://127.0.0.1:9882`，`startlux` 默认 `http://127.0.0.1:8091`。
+- 左栏有「导出配置 / 导入配置」：导出下载 `service-config-<时间>.json`，含 `format` / `version` / `packageVersion` / `gateway` / `services`；浏览器不支持 Blob 下载时改为抽屉展示 JSON。导入整份替换网关标量与服务条目，保留服务 id 与顺序，停掉被删除或停用的条目；不写 `.env`、不自动启动新条目，网关启用状态、host / port / 令牌变量变化后重启 World 生效。文件只带令牌变量名，值仍从部署 `.env` 读取；导入条目的地址会收到对应令牌，只导入信任的文件。坏格式、未知字段、坏 id、重复 id 或超过 1 MiB / 100 个服务时整份拒绝，不部分写入。
 - 4 秒轮询只更新卡片状态灯、状态行、状态块与动作行，不重建正在编辑的表单。
 - 「网关」：只读状态与端口、令牌变量名 / 令牌值、查询参数令牌、超时、默认语音模型；编号折叠区为「基本 / 令牌 / 请求」，一次「保存」经 `saveGateway` 写回标量。端口、主机与令牌变量改动只标「需要重启」，不在这里重启 World。
 
@@ -328,6 +329,7 @@ pnpm smoke:host "D:/AI/audio-v0.9.3-bin-windows-x64-cuda13.3" 8018
 ## 版本规则
 
 - 每次发版至少升 patch（第三位）；较大改动升 minor（第二位）。不单独发明 major，除非契约破坏到需要另起包。
+- 0.10.0 按此规则升 minor：新增配置导入导出，整份 JSON 含网关标量与服务条目，令牌只带变量名。
 - 0.9.0 按此规则升 minor：类型表去掉 `svc` / `custom`，新增 `StartLux Decision`；类型显示名与顺序整理；llama.cpp 去掉 `llama serve`，只留多模型与单模型，模型从 GGUF 目录多选/单选；StartLux 从 llama.cpp 条目拆成独立服务类型，代理 llama.cpp 的 GGUF，venv 入口直接启动。
 - 0.8.1 按此规则升 patch：只更新扩展介绍，无运行时变更。
 - 0.8.0 按此规则升 minor：llama.cpp 增加 `serve` / `router` / `single` 三种启动方式、GGUF 目录与启动参数；任务下拉保持预设标签；服务地址的上游令牌字段改叫 API Key；StartLux 伴生默认端口改为 8091，避开内置 llama.cpp 供应商的 8090。

@@ -12,8 +12,8 @@ import type {
 } from 'cortico/web/shared/client-panel.ts';
 import {
   SERVICE_TYPES, SERVICE_TYPE_LABELS,
-  type PanelGateway, type PanelLogs, type PanelService, type PanelServiceEntry, type PanelState,
-  type PanelTokenResult,
+  type PanelConfigBundle, type PanelGateway, type PanelLogs, type PanelService,
+  type PanelServiceEntry, type PanelState, type PanelTokenResult,
 } from '../src/panel.ts';
 import type { ServiceEntry, ServiceType } from '../src/types.ts';
 import { llamacppLaunchMode, tasksOfEntry } from '../src/entry.ts';
@@ -1028,7 +1028,22 @@ const servicesPanel: WebUiPanel = {
       variant: 'primary',
       onClick: () => openDraft(),
     });
-    creator.append(addButton, ui.h('p', 'connection-create-hint', T.listNote));
+    const transfer = ui.h('div', 'svc-transfer');
+    const exportButton = ui.button(T.exportConfig, {
+      size: 'sm',
+      onClick: () => void exportConfig(),
+    });
+    const importButton = ui.button(T.importConfig, {
+      size: 'sm',
+      onClick: () => chooseConfigFile(),
+    });
+    const fileInput = doc.createElement('input');
+    fileInput.type = 'file';
+    fileInput.accept = 'application/json,.json';
+    fileInput.hidden = true;
+    fileInput.addEventListener('change', () => void readConfigFile(), { signal: ctx.signal });
+    transfer.append(exportButton, importButton);
+    creator.append(addButton, ui.h('p', 'connection-create-hint', T.listNote), transfer, fileInput);
     side.append(creator, list);
     layout.append(side, editor);
     root.append(msg, layout);
@@ -1063,6 +1078,12 @@ const servicesPanel: WebUiPanel = {
       msg.hidden = false;
       msg.textContent = `${T.failed}: ${errText(err)}`;
       msg.classList.add('bad');
+    }
+
+    function info(text: string): void {
+      msg.hidden = false;
+      msg.textContent = text;
+      msg.classList.remove('bad');
     }
 
     function clearMsg(): void {
@@ -1238,6 +1259,131 @@ const servicesPanel: WebUiPanel = {
       renderList();
       if (wasSelected) renderEditor();
       paintList();
+    }
+
+    // ---- 导入导出 ----
+
+    function configFileName(): string {
+      const now = new Date();
+      const pad = (value: number): string => String(value).padStart(2, '0');
+      return `service-config-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`
+        + `-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.json`;
+    }
+
+    async function exportConfig(): Promise<void> {
+      try {
+        const bundle = await ctx.invoke<PanelConfigBundle>('exportConfig');
+        if (ctx.signal.aborted) return;
+        const text = JSON.stringify(bundle, null, 2);
+        let downloaded = false;
+        if (typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function'
+          && typeof Blob !== 'undefined') {
+          try {
+            const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+            const anchor = doc.createElement('a');
+            anchor.href = url;
+            anchor.download = configFileName();
+            anchor.rel = 'noopener';
+            anchor.style.display = 'none';
+            ctx.root.append(anchor);
+            anchor.click();
+            anchor.remove();
+            if (typeof URL.revokeObjectURL === 'function') {
+              ctx.timeout(() => URL.revokeObjectURL(url), 1000);
+            }
+            downloaded = true;
+          } catch {
+            downloaded = false;
+          }
+        }
+        if (downloaded) ui.toast(T.exported, 'ok');
+        else ui.drawer(T.exportTitle, text);
+      } catch (err) {
+        if (!ctx.signal.aborted) fail(err);
+      }
+    }
+
+    function chooseConfigFile(): void {
+      fileInput.value = '';
+      fileInput.click();
+    }
+
+    async function readFileText(file: File): Promise<string> {
+      if (typeof file.text === 'function') return file.text();
+      return new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result ?? ''));
+        reader.onerror = () => reject(reader.error ?? new Error('read failed'));
+        reader.readAsText(file);
+      });
+    }
+
+    async function readConfigFile(): Promise<void> {
+      const file = fileInput.files?.[0];
+      if (!file) return;
+      if (file.size > 1024 * 1024) {
+        fail(T.configFileTooLarge);
+        return;
+      }
+      let text: string;
+      try {
+        text = await readFileText(file);
+      } catch (err) {
+        if (!ctx.signal.aborted) fail(err);
+        return;
+      }
+      if (ctx.signal.aborted) return;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text.replace(/^﻿/, ''));
+      } catch {
+        fail(T.badConfigFile);
+        return;
+      }
+      const bundle = parsed as Partial<PanelConfigBundle> | null;
+      if (!bundle || typeof bundle !== 'object' || !Array.isArray(bundle.services)
+        || !bundle.gateway || typeof bundle.gateway !== 'object') {
+        fail(T.badConfigShape);
+        return;
+      }
+      const count = bundle.services.length;
+      const gateway = bundle.gateway as { host?: unknown; port?: unknown };
+      const rawAddress = typeof gateway.host === 'string' && typeof gateway.port === 'number'
+        ? `${gateway.host}:${gateway.port}`
+        : T.none;
+      const address = rawAddress.length > 120 ? `${rawAddress.slice(0, 117)}...` : rawAddress;
+      const confirmed = await ui.confirm({
+        title: T.importTitle,
+        body: T.importBody(count, address),
+        danger: true,
+      });
+      if (!confirmed || ctx.signal.aborted) return;
+
+      const wasEnabled = state?.gateway.enabled;
+      const busy = ui.busy(T.importing);
+      exportButton.disabled = true;
+      importButton.disabled = true;
+      try {
+        const next = await ctx.invoke<PanelState>('importConfig', [parsed]);
+        if (ctx.signal.aborted) return;
+        draft = null;
+        pendingSelect = null;
+        selection = next.services[0]
+          ? { kind: 'service', id: next.services[0].entry.id }
+          : null;
+        ui.toast(T.imported(count), 'ok');
+        await refresh(true);
+        if (ctx.signal.aborted) return;
+        const restart = next.gateway.restartRequired
+          || (wasEnabled !== undefined && wasEnabled !== next.gateway.enabled);
+        info(restart ? `${T.importNote} ${T.restartNeeded}` : T.importNote);
+      } catch (err) {
+        if (!ctx.signal.aborted) fail(err);
+      } finally {
+        busy.dispose();
+        exportButton.disabled = false;
+        importButton.disabled = false;
+      }
     }
 
     // ---- 编辑器 ----

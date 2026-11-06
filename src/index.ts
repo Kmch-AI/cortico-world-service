@@ -9,11 +9,14 @@ export { ServiceWorld } from './world.ts';
 export type { ServiceWorldOptions } from './world.ts';
 export { Manager, DEFAULT_LOG_LINES, MAX_LOG_LINES } from './manager.ts';
 export type { ManagerOptions, ServiceListSource } from './manager.ts';
-export { SERVICE_ID_RE, SERVICE_TYPES, SERVICE_TYPE_LABELS } from './panel.ts';
-export type {
-  PanelGateway, PanelLogs, PanelModels, PanelService, PanelServiceEntry, PanelState, PanelTokenResult,
+export {
+  CONFIG_BUNDLE_FORMAT, CONFIG_BUNDLE_VERSION, SERVICE_ID_RE, SERVICE_TYPES, SERVICE_TYPE_LABELS,
 } from './panel.ts';
-export { normalizeEntry, validateServices } from './validate.ts';
+export type {
+  PanelConfigBundle, PanelConfigGateway, PanelGateway, PanelLogs, PanelModels, PanelService,
+  PanelServiceEntry, PanelState, PanelTokenResult,
+} from './panel.ts';
+export { normalizeConfigBundle, normalizeEntry, validateServices } from './validate.ts';
 export { clearEnvLine, ENV_NAME_RE } from './secrets.ts';
 export {
   DEFAULT_HOST, endpointUrl, healthPathOf, healthUrl, hostPort, protocolOf, serverJsonPath,

@@ -40,6 +40,16 @@
   max-height: min(70vh, 46rem, calc(100dvh - 16rem));
 }
 
+.svc-transfer {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.svc-transfer .btn {
+  flex: 1 1 0;
+}
+
 .svc-editor {
   display: flex;
   flex-direction: column;

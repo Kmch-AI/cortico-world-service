@@ -49,6 +49,7 @@ const document = window.document;
 
 let segmentedCalls = 0;
 let drawerCalls = 0;
+const drawers = [];
 let confirmCalls = 0;
 
 function h(tag, cls, text) {
@@ -196,7 +197,7 @@ const ui = {
   progress: () => { throw new Error('unused'); },
   toast: () => ({ dispose() {} }),
   confirm: async () => { confirmCalls += 1; return true; },
-  drawer() { drawerCalls += 1; return { dispose() {} }; },
+  drawer(title, body) { drawerCalls += 1; drawers.push({ title, body }); return { dispose() {} }; },
   lightbox: () => ({ dispose() {} }),
   busy: () => ({ dispose() {} }),
   disable: () => ({ dispose() {} }),
@@ -261,6 +262,7 @@ const state = {
 };
 
 let addCount = 0;
+let lastImport = null;
 const calls = [];
 
 async function invoke(method, args = []) {
@@ -311,6 +313,43 @@ async function invoke(method, args = []) {
         'Qwen3-Reranker-0.6B.Q4_K_M',
         'StartLux Decision Q8_0',
       ];
+    case 'exportConfig':
+      return {
+        format: 'cortico-world-service',
+        version: 1,
+        packageVersion: '0.10.0',
+        gateway: {
+          enabled: state.gateway.enabled,
+          host: state.gateway.host,
+          port: state.gateway.port,
+          tokenSecret: state.gateway.secretName,
+          allowQueryToken: state.gateway.allowQueryToken,
+          requestTimeoutSec: state.gateway.requestTimeoutSec,
+          defaultSpeechModel: state.gateway.defaultSpeechModel,
+        },
+        services: state.services.map(({ entry }) => {
+          const { tokenSet: _tokenSet, ...config } = entry;
+          return structuredClone(config);
+        }),
+      };
+    case 'importConfig': {
+      const bundle = args[0];
+      lastImport = bundle;
+      state.gateway = {
+        ...state.gateway,
+        enabled: bundle.gateway.enabled,
+        host: bundle.gateway.host,
+        port: bundle.gateway.port,
+        secretName: bundle.gateway.tokenSecret,
+        allowQueryToken: bundle.gateway.allowQueryToken,
+        requestTimeoutSec: bundle.gateway.requestTimeoutSec,
+        defaultSpeechModel: bundle.gateway.defaultSpeechModel,
+        baseUrl: `http://${bundle.gateway.host}:${bundle.gateway.port}`,
+        restartRequired: true,
+      };
+      state.services = bundle.services.map(entry => service({ ...entry, tokenSet: false }, 'off'));
+      return structuredClone(state);
+    }
     case 'saveGateway':
       Object.assign(state.gateway, args[0]);
       return structuredClone(state);
@@ -792,4 +831,70 @@ const saveGateway = calls.findLast(item => item.method === 'saveGateway');
 assert.ok(saveGateway, 'gateway save');
 assert.equal(saveGateway.args[0].port, 9883);
 assert.equal(saveGateway.args[0].requestTimeoutSec, 180);
-console.log(`webui smoke ok: panels=2 draft-save=1 draft-discard=1 delete=1 sections=4+3 segmented=${segmentedCalls} drawer=${drawerCalls}`);
+
+// ---------------------------------------------------------------------------
+// 导入导出:导出走 drawer 兜底(jsdom 没有 createObjectURL),导入用隐藏的 file input。
+// 放在网关断言之后,因为导入会整份替换 state。
+// ---------------------------------------------------------------------------
+
+const exportButton = all('.svc-transfer .btn', servicesRoot).find(item => text(item) === '导出配置');
+const importButton = all('.svc-transfer .btn', servicesRoot).find(item => text(item) === '导入配置');
+assert.ok(exportButton, 'export button exists');
+assert.ok(importButton, 'import button exists');
+
+const nodeURL = globalThis.URL;
+globalThis.URL = window.URL;
+const drawersBefore = drawers.length;
+exportButton.click();
+await settle();
+globalThis.URL = nodeURL;
+assert.ok(calls.some(item => item.method === 'exportConfig'), 'export calls the data method');
+assert.equal(drawers.length, drawersBefore + 1, 'export falls back to a drawer without createObjectURL');
+const exportedText = drawers.at(-1).body;
+assert.match(exportedText, /"format": "cortico-world-service"/, 'export carries the format marker');
+assert.match(exportedText, /"id": "alpha"/, 'export carries service entries');
+assert.ok(!exportedText.includes('tokenSet'), 'export omits runtime token state');
+
+const importedBundle = {
+  format: 'cortico-world-service',
+  version: 1,
+  packageVersion: '0.10.0',
+  gateway: {
+    enabled: true,
+    host: '127.0.0.1',
+    port: 9900,
+    tokenSecret: '',
+    allowQueryToken: false,
+    requestTimeoutSec: 45,
+    defaultSpeechModel: '',
+  },
+  services: [{
+    id: 'delta',
+    name: 'Delta',
+    type: 'openai',
+    enabled: true,
+    endpoint: 'http://127.0.0.1:9102',
+    manage: false,
+    autoStart: false,
+    restartOnExit: false,
+    options: {},
+  }],
+};
+const fileInput = one('input[type="file"]', servicesRoot);
+Object.defineProperty(fileInput, 'files', {
+  configurable: true,
+  value: [new window.File([JSON.stringify(importedBundle)], 'config.json', { type: 'application/json' })],
+});
+const confirmsBeforeImport = confirmCalls;
+fire(fileInput, 'change');
+await settle();
+await settle();
+assert.equal(confirmCalls, confirmsBeforeImport + 1, 'import asks before replacing config');
+assert.deepEqual(lastImport, importedBundle, 'import sends the parsed file');
+assert.deepEqual(state.services.map(item => item.entry.id), ['delta'], 'import replaces the service list');
+assert.equal(state.gateway.port, 9900, 'import replaces the gateway port');
+assert.ok(card('delta', servicesRoot), 'imported service appears in the list');
+assert.match(text(one('.msgline', servicesRoot)), /导入的条目不会自动启动/, 'import reports the restart note');
+console.log('import/export smoke ok');
+
+console.log(`webui smoke ok: panels=2 draft-save=1 draft-discard=1 delete=1 sections=4+3 segmented=${segmentedCalls} drawer=${drawerCalls} import/export=1`);

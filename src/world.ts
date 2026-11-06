@@ -15,8 +15,9 @@ import {
   type GatewayHealthBody, type GatewayModel, type GatewayVoiceList,
 } from './gateway/server.ts';
 import { Manager, DEFAULT_LOG_LINES, MAX_LOG_LINES } from './manager.ts';
+import { CONFIG_BUNDLE_FORMAT, CONFIG_BUNDLE_VERSION } from './panel.ts';
 import type {
-  PanelGateway, PanelLogs, PanelModels, PanelService, PanelServiceEntry, PanelState,
+  PanelConfigBundle, PanelGateway, PanelLogs, PanelModels, PanelService, PanelServiceEntry, PanelState,
   PanelTokenResult,
 } from './panel.ts';
 import { ModelCatalog } from './profiles/discover.ts';
@@ -31,7 +32,7 @@ import type {
   ServiceConfigSection, ServiceEntry, ServiceStatus, SingRequest, SpeechRequest, SystemOneRequest,
   TtsAudio,
 } from './types.ts';
-import { normalizeEntry, normalizeGatewayPatch, validateServices } from './validate.ts';
+import { normalizeConfigBundle, normalizeEntry, normalizeGatewayPatch, validateServices } from './validate.ts';
 
 export interface ServiceWorldOptions {
   /** `worlds.service` 的活引用。 */
@@ -55,6 +56,28 @@ export interface ServiceWorldOptions {
 }
 
 const DEFAULT_TIMEOUT_SEC = 180;
+
+/** 导出时只带当前模型的字段;旧配置里的残留键不会跟着文件走。 */
+const EXPORTED_ENTRY_KEYS = [
+  'serverDir', 'binary', 'args', 'secretName', 'modelProfile', 'models', 'tasks', 'options',
+] as const;
+
+function exportedEntry(entry: ServiceEntry): ServiceEntry {
+  const out: ServiceEntry = {
+    id: entry.id,
+    name: entry.name,
+    type: entry.type,
+    enabled: entry.enabled,
+    endpoint: entry.endpoint,
+    manage: entry.manage,
+    autoStart: entry.autoStart,
+    restartOnExit: entry.restartOnExit,
+  };
+  for (const key of EXPORTED_ENTRY_KEYS) {
+    if (entry[key] !== undefined) (out as unknown as Record<string, unknown>)[key] = entry[key];
+  }
+  return JSON.parse(JSON.stringify(out)) as ServiceEntry;
+}
 
 function httpBase(host: string, port: number): string {
   const value = host.trim() || '127.0.0.1';
@@ -278,6 +301,8 @@ export class ServiceWorld implements World {
       case 'probe': return this.controlService('probe', args[0]);
       case 'discover': return this.discoverServices(args);
       case 'modelFiles': return this.panelModelFiles(args[0]);
+      case 'exportConfig': return this.panelExportConfig();
+      case 'importConfig': return this.importConfig(args[0]);
       default: throw new Error(`unknown method: services.${method}`);
     }
   }
@@ -378,6 +403,42 @@ export class ServiceWorld implements World {
     };
     await walk(dir, '', 1);
     return files.sort((a, b) => a.localeCompare(b, 'en'));
+  }
+
+  /** 导出全部配置:网关标量加服务条目;令牌只带变量名。 */
+  private panelExportConfig(): PanelConfigBundle {
+    const cfg = this.opts.cfg;
+    return {
+      format: CONFIG_BUNDLE_FORMAT,
+      version: CONFIG_BUNDLE_VERSION,
+      packageVersion: SERVICE_VERSION,
+      gateway: {
+        enabled: cfg.enabled,
+        host: cfg.host,
+        port: cfg.port,
+        tokenSecret: cfg.tokenSecret,
+        allowQueryToken: cfg.allowQueryToken,
+        requestTimeoutSec: cfg.requestTimeoutSec,
+        defaultSpeechModel: cfg.defaultSpeechModel,
+      },
+      services: this.manager.entries().map(exportedEntry),
+    };
+  }
+
+  /** 导入全部配置:整份替换网关标量与 services,停掉被删或停用的条目。 */
+  private async importConfig(input: unknown): Promise<PanelState> {
+    const bundle = normalizeConfigBundle(input);
+    this.opts.persist?.({ ...bundle.gateway, services: bundle.services });
+    Object.assign(this.opts.cfg, bundle.gateway);
+    this.opts.cfg.services = bundle.services;
+    await this.manager.sync();
+    this.catalog.seed(bundle.services);
+    this.log.info('服务配置已导入', {
+      services: bundle.services.length,
+      host: bundle.gateway.host,
+      port: bundle.gateway.port,
+    });
+    return this.panelState();
   }
 
   private async addService(input: unknown): Promise<PanelServiceEntry> {
